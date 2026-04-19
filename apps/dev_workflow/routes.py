@@ -146,6 +146,7 @@ async def api_tasks(
     status: Optional[str] = Query(None),
     project: Optional[str] = Query(None),
     phase: Optional[str] = Query(None),
+    include_archived: bool = Query(False),
 ):
     conn = get_tkt_db()
     if not conn:
@@ -161,6 +162,11 @@ async def api_tasks(
     if project:
         conditions.append("t.project_id = ?")
         params.append(project)
+    # Hide tasks belonging to archived projects unless explicitly requested.
+    # A project-specific filter (?project=X) bypasses this so an archived
+    # project's tasks remain reachable when its id is asked for by name.
+    if not include_archived and not project:
+        conditions.append("p.archived_at IS NULL")
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
@@ -337,6 +343,18 @@ async def api_update_project(project_id: str, request: Request):
             return JSONResponse({"error": f"invalid mode, must be one of {sorted(VALID_MODES)} or null"}, status_code=400)
         sets.append("mode = ?"); params.append(mode)
 
+    if "archived" in body or "archived_at" in body:
+        # Accept either a bool flag (`archived: true|false`) or an explicit timestamp.
+        # Bool → now()/NULL; explicit string → stored verbatim; null → NULL.
+        raw = body.get("archived_at", body.get("archived"))
+        if isinstance(raw, bool):
+            archive_value = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S") if raw else None
+        elif raw is None:
+            archive_value = None
+        else:
+            archive_value = str(raw)
+        sets.append("archived_at = ?"); params.append(archive_value)
+
     if not sets:
         return JSONResponse({"error": "no editable fields provided"}, status_code=400)
 
@@ -365,11 +383,12 @@ async def api_update_project(project_id: str, request: Request):
 async def api_roadmap(
     project: Optional[str] = Query(None),
     include_done: bool = Query(False),
+    include_archived: bool = Query(False),
 ):
     """Initiatives + epics with progress rollup. Mirrors the MCP tkt_roadmap tool.
 
-    By default, only returns active items (excludes done/cancelled/deferred).
-    Pass `include_done=true` to get the full list.
+    By default, only returns active items (excludes done/cancelled/deferred)
+    and hides epics belonging to archived projects.
     """
     conn = get_tkt_db()
     if not conn:
@@ -382,6 +401,8 @@ async def api_roadmap(
     if project:
         conditions.append("t.project_id = ?")
         params.append(project)
+    elif not include_archived:
+        conditions.append("p.archived_at IS NULL")
     where = "WHERE " + " AND ".join(conditions)
 
     rows = conn.execute(

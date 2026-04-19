@@ -53,14 +53,16 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
   const totalActive = p.open_count + p.in_progress_count + p.backlog_count
   const total = totalActive + p.done_count
   const donePct = total === 0 ? 0 : Math.round((p.done_count / total) * 100)
+  // Show the project's own priority first — fall back to the most urgent open
+  // task only if the project itself has no priority set. Previously we used
+  // `top_priority` alone, which left idle projects with an empty badge even
+  // when `projects.priority` was populated.
+  const priority = p.priority ?? p.top_priority
 
   return (
-    <button
-      type="button"
-      onClick={() => onEdit(p.project_id)}
-      className="group block w-full text-left rounded-xl border p-3.5 transition-all hover:border-indigo-500/60 hover:shadow-lg hover:shadow-indigo-900/10 focus:outline-none focus:border-indigo-500"
+    <div
+      className="group relative w-full rounded-xl border p-3.5 transition-all hover:border-indigo-500/60 hover:shadow-lg hover:shadow-indigo-900/10"
       style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
-      title="Click to edit project"
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -73,16 +75,16 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
         <ContextBadge context={p.context} />
       </div>
 
-      {/* Health pill */}
+      {/* Health pill + priority */}
       <div className="flex items-center gap-2 mb-3 flex-wrap">
         <span className={`text-[10px] px-1.5 py-px rounded ${HEALTH_CLS[health.tone]}`}>
           {health.label}
         </span>
-        {p.top_priority && (
+        {priority && (
           <span className="flex items-center gap-1">
-            <PriorityDot priority={p.top_priority} />
-            <span className={`text-[10px] ${Priority.label[p.top_priority as keyof typeof Priority.label] ?? Priority.fallback.label}`}>
-              {Priority.display[p.top_priority as keyof typeof Priority.display] ?? p.top_priority}
+            <PriorityDot priority={priority} />
+            <span className={`text-[10px] ${Priority.label[priority as keyof typeof Priority.label] ?? Priority.fallback.label}`}>
+              {Priority.display[priority as keyof typeof Priority.display] ?? priority}
             </span>
           </span>
         )}
@@ -100,7 +102,7 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
       </div>
 
       {/* Progress bar */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-3">
         <div className="flex-1 h-1 rounded-full bg-slate-800 overflow-hidden">
           <div
             className="h-1 rounded-full bg-emerald-500 transition-all"
@@ -112,25 +114,32 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
         </span>
       </div>
 
-      {/* Flags */}
-      <div className="flex flex-wrap gap-1">
-        {p.stale_count > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-amber-900/40 text-amber-300 border border-amber-700/40">
-            {p.stale_count} stale&nbsp;(&gt;14d)
-          </span>
-        )}
-        {p.overdue_count > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-red-900/40 text-red-300 border border-red-700/40">
-            {p.overdue_count} overdue
-          </span>
-        )}
-        {p.backlog_count > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-indigo-900/40 text-indigo-300 border border-indigo-700/40">
-            {p.backlog_count} backlog
-          </span>
-        )}
+      {/* Actions */}
+      <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800/60">
+        <Link
+          to={`/workflow?project=${encodeURIComponent(p.project_id)}`}
+          className="flex-1 text-center text-[10px] px-1.5 py-1 rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
+          title="Open task board for this project"
+        >
+          Tasks ({totalActive + p.done_count})
+        </Link>
+        <Link
+          to={`/workflow/epics?project=${encodeURIComponent(p.project_id)}`}
+          className="flex-1 text-center text-[10px] px-1.5 py-1 rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
+          title="Open epics for this project"
+        >
+          Epics ({p.active_epic_count})
+        </Link>
+        <button
+          type="button"
+          onClick={() => onEdit(p.project_id)}
+          className="flex-1 text-center text-[10px] px-1.5 py-1 rounded bg-indigo-900/40 text-indigo-200 hover:bg-indigo-900/70 border border-indigo-800/50"
+          title="Edit project"
+        >
+          Edit
+        </button>
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -174,21 +183,16 @@ function ProjectListRow({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string
     <tr
       className="border-b border-slate-800/60 hover:bg-slate-900/40 transition-colors"
     >
-      {/* Name + id (click to edit) */}
+      {/* Name + id */}
       <td className="px-3 py-2">
-        <button
-          type="button"
-          onClick={() => onEdit(p.project_id)}
-          className="group block text-left focus:outline-none"
-          title="Click to edit project"
-        >
-          <div className="text-sm font-medium text-slate-100 group-hover:text-white truncate max-w-[240px]">
+        <div>
+          <div className="text-sm font-medium text-slate-100 truncate max-w-[240px]">
             {p.project_name}
           </div>
           <div className="text-[10px] font-mono text-slate-500 truncate max-w-[240px]">
             {p.project_id}
           </div>
-        </button>
+        </div>
       </td>
 
       {/* Context */}
@@ -203,19 +207,18 @@ function ProjectListRow({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string
         </span>
       </td>
 
-      {/* Top priority */}
+      {/* Priority — project's own, with most-urgent-open-task as fallback */}
       <td className="px-3 py-2">
-        {p.top_priority ? (
-          <PriorityBadge priority={p.top_priority} />
+        {(p.priority ?? p.top_priority) ? (
+          <PriorityBadge priority={(p.priority ?? p.top_priority) as string} />
         ) : (
           <span className="text-[10px] text-slate-600">—</span>
         )}
       </td>
 
-      {/* WIP / Open / Backlog */}
+      {/* WIP / Open */}
       <td className="px-3 py-2 text-center text-xs"><Num value={p.in_progress_count} tone={p.in_progress_count > 3 ? 'warn' : 'amber'} /></td>
       <td className="px-3 py-2 text-center text-xs"><Num value={p.open_count} tone="blue" /></td>
-      <td className="px-3 py-2 text-center text-xs"><Num value={p.backlog_count} tone="indigo" /></td>
 
       {/* Epics */}
       <td className="px-3 py-2 text-center text-xs"><Num value={p.active_epic_count} tone="indigo" /></td>
@@ -229,8 +232,6 @@ function ProjectListRow({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string
       </td>
 
       {/* Flags */}
-      <td className="px-3 py-2 text-center text-xs"><Num value={p.stale_count} tone={p.stale_count > 0 ? 'amber' : 'slate'} /></td>
-      <td className="px-3 py-2 text-center text-xs"><Num value={p.overdue_count} tone={p.overdue_count > 0 ? 'warn' : 'slate'} /></td>
       <td className="px-3 py-2 text-center text-xs"><Num value={p.done_14d} tone="emerald" /></td>
 
       {/* Progress */}
@@ -268,6 +269,14 @@ function ProjectListRow({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string
           >
             Epics
           </Link>
+          <button
+            type="button"
+            onClick={() => onEdit(p.project_id)}
+            className="text-[10px] px-1.5 py-px rounded bg-indigo-900/40 text-indigo-200 hover:bg-indigo-900/70 border border-indigo-800/50"
+            title="Edit project"
+          >
+            Edit
+          </button>
         </div>
       </td>
     </tr>
@@ -286,12 +295,9 @@ function ProjectListTable({ items, onEdit }: { items: ProjectInsights[]; onEdit:
             <th className="px-3 py-2 font-medium">Priority</th>
             <th className="px-3 py-2 font-medium text-center" title="In progress">WIP</th>
             <th className="px-3 py-2 font-medium text-center">Open</th>
-            <th className="px-3 py-2 font-medium text-center">Backlog</th>
             <th className="px-3 py-2 font-medium text-center" title="Active initiatives + epics">Epics</th>
             <th className="px-3 py-2 font-medium text-center" title="Critical-priority open tasks">Crit</th>
             <th className="px-3 py-2 font-medium text-center" title="High-priority open tasks">High</th>
-            <th className="px-3 py-2 font-medium text-center" title="Open tasks older than 14 days">Stale</th>
-            <th className="px-3 py-2 font-medium text-center" title="Past due date">Over</th>
             <th className="px-3 py-2 font-medium text-center" title="Done in last 14 days">14d ✓</th>
             <th className="px-3 py-2 font-medium">Progress</th>
             <th className="px-3 py-2 font-medium">Active</th>

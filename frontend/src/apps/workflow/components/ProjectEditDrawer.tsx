@@ -47,6 +47,7 @@ export default function ProjectEditDrawer({ projectId, onClose }: ProjectEditDra
 
   const [form, setForm] = useState<FormState | null>(null)
   const [saving, setSaving] = useState(false)
+  const [archiving, setArchiving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const loadedForId = useRef<string | null>(null)
 
@@ -117,6 +118,37 @@ export default function ProjectEditDrawer({ projectId, onClose }: ProjectEditDra
       setSaveError(e instanceof Error ? e.message : String(e))
     } finally {
       setSaving(false)
+    }
+  }
+
+  async function handleArchiveToggle() {
+    if (!data || !projectId) return
+    const archiving = data.archived_at == null
+    const confirmMsg = archiving
+      ? `Archive "${data.name}"? Its tasks and epics will be hidden from default views. You can restore it later.`
+      : `Restore "${data.name}"? Tasks and epics will reappear in default views.`
+    if (!window.confirm(confirmMsg)) return
+
+    setArchiving(true); setSaveError(null)
+    try {
+      const res = await fetch(`/workflow/api/projects/${encodeURIComponent(projectId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ archived: archiving }),
+      })
+      const body = await res.json()
+      if (!res.ok) {
+        setSaveError(body?.error ?? `Update failed (${res.status})`)
+        return
+      }
+      await mutate(body, { revalidate: false })
+      await swrMutate('/workflow/api/projects-insights')
+      loadedForId.current = null
+      onClose()
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setArchiving(false)
     }
   }
 
@@ -223,20 +255,43 @@ export default function ProjectEditDrawer({ projectId, onClose }: ProjectEditDra
           )}
         </div>
 
-        <div className="shrink-0 px-4 py-3 border-t flex items-center justify-end gap-2" style={{ borderColor: 'var(--wf-border)' }}>
-          <button
-            onClick={onClose}
-            className="px-3 py-1.5 text-xs rounded border border-slate-700 text-slate-300 hover:bg-slate-800"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            disabled={!dirty || saving}
-            className="px-3 py-1.5 text-xs rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
+        <div className="shrink-0 px-4 py-3 border-t flex items-center justify-between gap-2" style={{ borderColor: 'var(--wf-border)' }}>
+          {data && (
+            <button
+              onClick={handleArchiveToggle}
+              disabled={archiving || saving}
+              className={
+                'px-3 py-1.5 text-xs rounded border disabled:opacity-40 disabled:cursor-not-allowed ' +
+                (data.archived_at == null
+                  ? 'border-red-900/50 text-red-300 hover:bg-red-950/40'
+                  : 'border-emerald-900/50 text-emerald-300 hover:bg-emerald-950/40')
+              }
+              title={data.archived_at == null
+                ? 'Hide this project and its tasks from default views'
+                : 'Restore this project to default views'}
+            >
+              {archiving
+                ? '…'
+                : data.archived_at == null
+                  ? 'Archive'
+                  : 'Restore'}
+            </button>
+          )}
+          <div className="flex items-center gap-2 ml-auto">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs rounded border border-slate-700 text-slate-300 hover:bg-slate-800"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={!dirty || saving}
+              className="px-3 py-1.5 text-xs rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
         </div>
       </div>
     </>
