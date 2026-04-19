@@ -28,15 +28,31 @@ export interface PipelineStateResponse {
   pipelines: PipelineState[]
 }
 
+export type SessionLivenessReason =
+  | 'dead_pid'
+  | 'pid_and_heartbeat'
+  | 'pid_and_fresh_file'
+  | 'stale_pid_reuse'
+
 export interface Session {
   sessionId: string
   pid: number
   alive: boolean
   cwd: string
   startedAt: string
+  age_hours: number | null
+  liveness_reason: SessionLivenessReason
   name: string | null
   task_id: number | null
   heartbeat_at: string | null
+}
+
+export interface ProgressSummary {
+  total: number
+  done: number
+  in_progress: number
+  open: number
+  percent: number
 }
 
 export interface Task {
@@ -56,6 +72,83 @@ export interface Task {
   updated_at: string
   completed_at: string | null
   phase: string
+  parent_id: number | null
+  due_date: string | null
+  slug?: string | null
+  /** Only present for parent-type rows (initiative/epic) */
+  children_count?: number
+  /** Only present for parent-type rows (initiative/epic) */
+  progress?: ProgressSummary
+}
+
+/** Minimal ancestor/sibling/child reference — returned by /api/tasks/:id/detail */
+export interface TaskRef {
+  id: number
+  title: string
+  type: string
+  status: string
+  priority: string
+  parent_id: number | null
+  project_id?: string
+  slug?: string | null
+  children_count?: number
+  progress?: ProgressSummary
+}
+
+export interface TreeNode extends TaskRef {
+  project_name?: string
+  domain?: string | null
+  due_date?: string | null
+  slug?: string | null
+  children: TreeNode[]
+  children_count?: number
+  progress?: ProgressSummary
+}
+
+export interface TreeResponse {
+  tree: TreeNode
+  ancestors: TaskRef[]
+}
+
+export type Context = 'work' | 'family' | 'personal'
+
+export interface RoadmapItem {
+  id: number
+  title: string
+  type: string
+  status: string
+  priority: string
+  parent_id: number | null
+  project_id: string
+  project_name: string
+  domain: string | null
+  due_date: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  children_count: number
+  progress: ProgressSummary
+  context: Context | null
+  project_context: Context | null
+  slug?: string | null
+}
+
+export interface ProjectInsights {
+  project_id: string
+  project_name: string
+  context: Context | null
+  open_count: number
+  in_progress_count: number
+  backlog_count: number
+  done_count: number
+  active_epic_count: number
+  stale_count: number
+  done_14d: number
+  overdue_count: number
+  critical_count: number
+  high_count: number
+  top_priority: string | null
+  last_activity: string | null
 }
 
 export interface ProjectSummary {

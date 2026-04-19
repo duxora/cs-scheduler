@@ -1,7 +1,7 @@
 import { Outlet } from 'react-router-dom'
 import { Suspense, useState } from 'react'
 import Sidebar from './Sidebar'
-import { useTheme } from '../apps/workflow/lib/useTheme'
+import { useTheme } from '../shared/useTheme'
 import { ThemeContext } from '../shared/ThemeContext'
 
 export default function HubShell() {

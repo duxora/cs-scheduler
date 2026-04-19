@@ -13,8 +13,10 @@ import ProjectCard from './ProjectCard'
 import PhaseChip from './PhaseChip'
 import SortBuilder from './SortBuilder'
 import TaskRow from './TaskRow'
+import InitiativesStrip from './InitiativesStrip'
 import { EmptyState, LoadingState, ErrorState } from './TaskListStates'
-import { SearchIcon, CloseIcon, SettingsIcon, CheckTaskIcon, ExternalLinkIcon } from './ui/icons'
+import { CloseIcon, SettingsIcon, CheckTaskIcon, ExternalLinkIcon } from './ui/icons'
+import FilterBar from './common/FilterBar'
 
 // ── main component ─────────────────────────────────────────────────────────
 
@@ -142,6 +144,9 @@ export default function TaskBoard() {
         </div>
       </div>
 
+      {/* ── Initiatives & Epics hero strip ─────────────────────────────── */}
+      <InitiativesStrip projectFilter={projectFilter} />
+
       {/* ── Project cards ──────────────────────────────────────────────── */}
       <div className="flex flex-wrap gap-1.5 px-4 py-3 shrink-0 border-b" style={{ borderColor: 'var(--wf-border)' }}>
         <ProjectCard
@@ -192,50 +197,36 @@ export default function TaskBoard() {
       </div>
 
       {/* ── Filter bar ─────────────────────────────────────────────────── */}
-      <div
-        className="flex flex-wrap items-center gap-2 px-4 py-2.5 shrink-0 border-b"
-        style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}
-      >
-        {/* Search */}
-        <div className="relative">
-          <SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search tasks…"
-            className="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg pl-7 pr-3 py-1.5 text-slate-200 w-full sm:w-48 placeholder-slate-600 focus:border-blue-500/60 focus:bg-slate-800 focus:outline-none transition-all"
-          />
-          {search && (
-            <button onClick={() => setSearch('')}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
-              <CloseIcon />
-            </button>
-          )}
-        </div>
+      <FilterBar style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}>
+        <FilterBar.Search
+          value={search}
+          onChange={setSearch}
+          placeholder="Search tasks…"
+          onClear={() => setSearch('')}
+        />
 
         {/* Project select */}
-        <select
+        <FilterBar.Select
           value={projectFilter}
           onChange={(e) => setProjectFilter(e.target.value)}
-          className="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300 focus:border-blue-500/60 focus:outline-none transition-all"
+          selectClassName="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300 focus:border-blue-500/60 focus:outline-none transition-all"
         >
           <option value="">All Projects</option>
           {(projects ?? []).map((p) => (
             <option key={p.project_id} value={p.project_id}>{p.project_name}</option>
           ))}
-        </select>
+        </FilterBar.Select>
 
         {/* Status select */}
-        <select
+        <FilterBar.Select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300 focus:border-blue-500/60 focus:outline-none transition-all"
+          selectClassName="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300 focus:border-blue-500/60 focus:outline-none transition-all"
         >
           {Status.options.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
+        </FilterBar.Select>
 
         {/* Clear filters pill */}
         {activeFilters > 0 && (
@@ -248,12 +239,10 @@ export default function TaskBoard() {
           </button>
         )}
 
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[11px] text-slate-300 font-medium tabular-nums">
-            {visibleTasks.length} task{visibleTasks.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-      </div>
+        <FilterBar.Count className="text-slate-300 font-medium">
+          {visibleTasks.length} task{visibleTasks.length !== 1 ? 's' : ''}
+        </FilterBar.Count>
+      </FilterBar>
 
       {/* ── Sort builder ───────────────────────────────────────────────── */}
       <SortBuilder controller={sortController} />
@@ -318,6 +307,7 @@ export default function TaskBoard() {
           await handleDeleteTask(id)
           setDrawerTaskId(null)
         }}
+        onNavigate={setDrawerTaskId}
       />
 
       <BulkActions

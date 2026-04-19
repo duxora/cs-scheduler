@@ -1,7 +1,11 @@
+import { Link } from 'react-router-dom'
 import type { Task } from '../types'
-import { Priority } from '../lib/tokens'
+import { Priority, isParentType } from '../lib/tokens'
 import { PriorityDot, StatusBadge } from './ui/Badge'
+import { TypeBadge } from './ui/TypeBadge'
+import { ProgressBar } from './ui/ProgressBar'
 import { TrashIcon, GridIcon, ExternalLinkIcon } from './ui/icons'
+import { treePath } from '../lib/urls'
 
 interface TaskRowProps {
   task: Task
@@ -13,6 +17,8 @@ interface TaskRowProps {
 
 export default function TaskRow({ task, selected, onSelect, onOpenDetail, onDelete }: TaskRowProps) {
   const stripe = Priority.stripe[task.priority as keyof typeof Priority.stripe] ?? Priority.fallback.stripe
+  const isParent = isParentType(task.type)
+  const showProgress = isParent && task.progress && task.progress.total > 0
 
   return (
     <div
@@ -55,8 +61,35 @@ export default function TaskRow({ task, selected, onSelect, onOpenDetail, onDele
           </button>
         </div>
 
+        {/* Parent breadcrumb chip — only when this task has a parent */}
+        {task.parent_id != null && (
+          <Link
+            to={treePath(task.parent_id!)}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-1 pl-3 text-[10px] text-slate-400 hover:text-indigo-300 w-fit transition-colors"
+            title="View parent tree"
+          >
+            <span className="text-slate-600" aria-hidden="true">↳</span>
+            <span>parent #{task.parent_id}</span>
+          </Link>
+        )}
+
+        {/* Progress row — shown only for parent-type rows with progress */}
+        {showProgress && task.progress && (
+          <div className="pl-3 flex items-center gap-2 max-w-md">
+            <ProgressBar
+              done={task.progress.done}
+              total={task.progress.total}
+              showCounts
+              showPercent
+              height={1}
+            />
+          </div>
+        )}
+
         {/* Meta row */}
         <div className="flex items-center gap-2 pl-3">
+          {isParent && <TypeBadge type={task.type} />}
           <StatusBadge status={task.status} pill />
           <span className="flex items-center gap-1 text-[12px] text-slate-200 font-medium shrink-0">
             <GridIcon />

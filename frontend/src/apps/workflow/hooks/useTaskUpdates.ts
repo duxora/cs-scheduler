@@ -17,6 +17,7 @@ export function useTaskUpdates(params: { status?: string; project?: string } = {
   }, [params.status, params.project])
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchTasks()
 
     const sse = new EventSource('/workflow/api/task-updates')

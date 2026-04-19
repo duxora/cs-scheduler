@@ -19,6 +19,9 @@ router = APIRouter(redirect_slashes=True)
 # tkt database path
 TKT_DB_PATH = Path.home() / ".backlog" / "backlog.db"
 
+# Task type hierarchy (mirrors backlog/src/models/task.ts)
+PARENT_TYPES = ("initiative", "epic")
+
 
 def get_tkt_db() -> Optional[sqlite3.Connection]:
     if not TKT_DB_PATH.exists():
@@ -26,6 +29,111 @@ def get_tkt_db() -> Optional[sqlite3.Connection]:
     conn = sqlite3.connect(str(TKT_DB_PATH))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# ── Hierarchy helpers ────────────────────────────────────────────────────────
+
+def compute_progress(conn: sqlite3.Connection, task_id: int) -> dict:
+    """Rollup of descendant leaf-task counts by status.
+    Mirrors TaskModel.progress() in backlog/src/models/task.ts — walks the whole
+    subtree via recursive CTE but counts only leaf types (containers excluded).
+    """
+    rows = conn.execute(
+        """
+        WITH RECURSIVE descendants(id) AS (
+          SELECT id FROM tasks WHERE parent_id = ?
+          UNION ALL
+          SELECT t.id FROM tasks t
+          JOIN descendants d ON t.parent_id = d.id
+        )
+        SELECT t.status FROM tasks t
+        JOIN descendants d ON t.id = d.id
+        WHERE t.type NOT IN ('initiative', 'epic')
+        """,
+        [task_id],
+    ).fetchall()
+
+    total = len(rows)
+    done = sum(1 for r in rows if r["status"] == "done")
+    in_progress = sum(1 for r in rows if r["status"] == "in_progress")
+    open_ = sum(1 for r in rows if r["status"] in ("open", "backlog"))
+    percent = 0 if total == 0 else round((done / total) * 100)
+    return {
+        "total": total,
+        "done": done,
+        "in_progress": in_progress,
+        "open": open_,
+        "percent": percent,
+    }
+
+
+def count_children(conn: sqlite3.Connection, task_id: int) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM tasks WHERE parent_id = ?", [task_id]
+    ).fetchone()
+    return row["c"] if row else 0
+
+
+def list_ancestors(conn: sqlite3.Connection, task_id: int) -> list[dict]:
+    """Walk up parent chain. Returns [immediate_parent, grandparent, ...]."""
+    chain: list[dict] = []
+    seen: set[int] = set()
+    current_id = task_id
+    while True:
+        row = conn.execute(
+            """
+            SELECT t.id, t.parent_id, t.title, t.type, t.status, t.priority, t.project_id, t.slug
+            FROM tasks t WHERE t.id = ?
+            """,
+            [current_id],
+        ).fetchone()
+        if not row or row["parent_id"] is None or row["parent_id"] in seen:
+            break
+        seen.add(row["parent_id"])
+        parent = conn.execute(
+            """
+            SELECT t.id, t.parent_id, t.title, t.type, t.status, t.priority, t.project_id, t.slug
+            FROM tasks t WHERE t.id = ?
+            """,
+            [row["parent_id"]],
+        ).fetchone()
+        if not parent:
+            break
+        chain.append(dict(parent))
+        current_id = parent["id"]
+    return chain
+
+
+def build_tree_node(conn: sqlite3.Connection, task_id: int) -> Optional[dict]:
+    """Recursive hierarchy — mirrors buildTree() in backlog/src/mcp/server.ts."""
+    root = conn.execute(
+        """
+        SELECT t.id, t.parent_id, t.title, t.type, t.status, t.priority,
+               t.domain, t.project_id, p.name AS project_name, t.slug,
+               t.created_at, t.updated_at, t.completed_at, t.due_date
+        FROM tasks t
+        JOIN projects p ON t.project_id = p.id
+        WHERE t.id = ?
+        """,
+        [task_id],
+    ).fetchone()
+    if not root:
+        return None
+
+    node = dict(root)
+    node["children"] = []
+    if node["type"] in PARENT_TYPES:
+        node["progress"] = compute_progress(conn, task_id)
+        node["children_count"] = count_children(conn, task_id)
+        children = conn.execute(
+            "SELECT id FROM tasks WHERE parent_id = ? ORDER BY created_at ASC",
+            [task_id],
+        ).fetchall()
+        for child in children:
+            child_node = build_tree_node(conn, child["id"])
+            if child_node:
+                node["children"].append(child_node)
+    return node
 
 
 # ── Dashboard page (now served by React SPA at frontend/dist/) ───────────────
@@ -59,8 +167,9 @@ async def api_tasks(
     rows = conn.execute(f"""
         SELECT t.id, t.project_id, p.name as project_name,
                t.title, t.type, t.priority, t.status,
-               t.domain, t.pr_number, t.branch,
-               t.created_at, t.updated_at, t.completed_at
+               t.domain, t.pr_number, t.branch, t.parent_id,
+               t.context, p.context AS project_context, t.slug,
+               t.created_at, t.updated_at, t.completed_at, t.due_date
         FROM tasks t
         JOIN projects p ON t.project_id = p.id
         {where}
@@ -74,6 +183,9 @@ async def api_tasks(
         task["phase"] = _detect_phase(r)
         if phase and task["phase"] != phase:
             continue
+        if task["type"] in PARENT_TYPES:
+            task["children_count"] = count_children(conn, task["id"])
+            task["progress"] = compute_progress(conn, task["id"])
         tasks.append(task)
 
     conn.close()
@@ -87,7 +199,7 @@ async def api_dashboard():
         return JSONResponse([])
 
     rows = conn.execute("""
-        SELECT p.id as project_id, p.name as project_name,
+        SELECT p.id as project_id, p.name as project_name, p.context,
                SUM(CASE WHEN t.status = 'open' THEN 1 ELSE 0 END) as open_count,
                SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_count,
                SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done_count
@@ -99,6 +211,153 @@ async def api_dashboard():
 
     conn.close()
     return JSONResponse([dict(r) for r in rows])
+
+
+@router.get("/api/projects-insights", response_class=JSONResponse)
+async def api_projects_insights():
+    """Per-project insights for the Projects tab.
+
+    Extends /api/dashboard with PM-oriented signals: WIP, stale open tasks,
+    done-velocity (14d), active epic count, last-activity timestamp.
+    """
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse([])
+
+    rows = conn.execute(
+        """
+        SELECT p.id          AS project_id,
+               p.name        AS project_name,
+               p.context     AS context,
+               p.archived_at AS archived_at,
+               SUM(CASE WHEN t.status = 'open'        THEN 1 ELSE 0 END) AS open_count,
+               SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_count,
+               SUM(CASE WHEN t.status = 'backlog'     THEN 1 ELSE 0 END) AS backlog_count,
+               SUM(CASE WHEN t.status = 'done'        THEN 1 ELSE 0 END) AS done_count,
+               SUM(CASE WHEN t.type IN ('initiative','epic')
+                         AND t.status NOT IN ('done','cancelled','deferred')
+                        THEN 1 ELSE 0 END)                                AS active_epic_count,
+               SUM(CASE WHEN t.status = 'open'
+                         AND t.created_at < datetime('now', '-14 days')
+                        THEN 1 ELSE 0 END)                                AS stale_count,
+               SUM(CASE WHEN t.status = 'done'
+                         AND t.completed_at >= datetime('now', '-14 days')
+                        THEN 1 ELSE 0 END)                                AS done_14d,
+               SUM(CASE WHEN t.due_date IS NOT NULL
+                         AND t.due_date < date('now')
+                         AND t.status NOT IN ('done','cancelled','deferred')
+                        THEN 1 ELSE 0 END)                                AS overdue_count,
+               SUM(CASE WHEN t.priority = 'critical'
+                         AND t.status IN ('open','in_progress','backlog')
+                        THEN 1 ELSE 0 END)                                AS critical_count,
+               SUM(CASE WHEN t.priority = 'high'
+                         AND t.status IN ('open','in_progress','backlog')
+                        THEN 1 ELSE 0 END)                                AS high_count,
+               (SELECT t2.priority FROM tasks t2
+                 WHERE t2.project_id = p.id
+                   AND t2.status IN ('open','in_progress','backlog')
+                 ORDER BY CASE t2.priority
+                     WHEN 'critical' THEN 0
+                     WHEN 'high' THEN 1
+                     WHEN 'medium' THEN 2
+                     WHEN 'low' THEN 3
+                     ELSE 4
+                   END
+                 LIMIT 1)                                                 AS top_priority,
+               MAX(t.updated_at)                                          AS last_activity
+        FROM projects p
+        LEFT JOIN tasks t ON t.project_id = p.id
+        WHERE p.archived_at IS NULL
+        GROUP BY p.id
+        ORDER BY p.name
+        """
+    ).fetchall()
+
+    conn.close()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@router.get("/api/roadmap", response_class=JSONResponse)
+async def api_roadmap(
+    project: Optional[str] = Query(None),
+    include_done: bool = Query(False),
+):
+    """Initiatives + epics with progress rollup. Mirrors the MCP tkt_roadmap tool.
+
+    By default, only returns active items (excludes done/cancelled/deferred).
+    Pass `include_done=true` to get the full list.
+    """
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse([])
+
+    conditions = ["t.type IN ('initiative', 'epic')"]
+    params: list = []
+    if not include_done:
+        conditions.append("t.status NOT IN ('done', 'cancelled', 'deferred')")
+    if project:
+        conditions.append("t.project_id = ?")
+        params.append(project)
+    where = "WHERE " + " AND ".join(conditions)
+
+    rows = conn.execute(
+        f"""
+        SELECT t.id, t.project_id, p.name AS project_name,
+               t.title, t.type, t.priority, t.status, t.domain, t.parent_id,
+               t.context, p.context AS project_context, t.slug,
+               t.due_date, t.created_at, t.updated_at, t.completed_at
+        FROM tasks t
+        JOIN projects p ON t.project_id = p.id
+        {where}
+        ORDER BY
+          CASE t.type WHEN 'initiative' THEN 0 WHEN 'epic' THEN 1 ELSE 2 END,
+          CASE t.priority
+            WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+            WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4
+          END,
+          t.created_at ASC
+        """,
+        params,
+    ).fetchall()
+
+    out = []
+    for r in rows:
+        item = dict(r)
+        item["children_count"] = count_children(conn, item["id"])
+        item["progress"] = compute_progress(conn, item["id"])
+        out.append(item)
+
+    conn.close()
+    return JSONResponse(out)
+
+
+def _parse_id_or_slug(raw: str, conn: sqlite3.Connection) -> Optional[int]:
+    """Parse '{id}' or '{id}-{slug}' → int. Falls back to slug-only lookup if no id prefix."""
+    import re
+    m = re.match(r"^(\d+)", raw)
+    if m:
+        return int(m.group(1))
+    row = conn.execute("SELECT id FROM tasks WHERE slug = ? LIMIT 1", [raw]).fetchone()
+    return row["id"] if row else None
+
+
+@router.get("/api/tree/{ref}", response_class=JSONResponse)
+async def api_tree(ref: str):
+    """Recursive subtree. Accepts numeric id or '{id}-{slug}' or bare slug."""
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"error": "db not found"}, status_code=500)
+    try:
+        task_id = _parse_id_or_slug(ref, conn)
+        if task_id is None:
+            return JSONResponse({"error": f"Task '{ref}' not found"}, status_code=404)
+        node = build_tree_node(conn, task_id)
+        if not node:
+            return JSONResponse({"error": f"Task #{task_id} not found"}, status_code=404)
+        ancestors = list_ancestors(conn, task_id)
+        return JSONResponse({"tree": node, "ancestors": ancestors})
+    finally:
+        conn.close()
 
 
 # ── Server-Sent Events for real-time updates ───────────────────────────────────
@@ -282,46 +541,115 @@ async def task_updates(project: Optional[str] = Query(None), status: Optional[st
 
 CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
+# Liveness thresholds. A session file's PID probe alone is unreliable because
+# macOS recycles PIDs within days — old session files keep looking "alive" when
+# their original PID now belongs to an unrelated (but possibly also Claude)
+# process. Layer heartbeat freshness + file age on top of the PID check.
+SESSION_HEARTBEAT_FRESH_S = 300   # 5 min — a recent tkt heartbeat confirms this session is live
+SESSION_FRESH_S          = 24 * 3600  # 24h — fallback for sessions without a tkt claim
 
-def _list_sessions() -> list[dict]:
-    """List active Claude Code sessions from ~/.claude/sessions/."""
+
+def _parse_started_at(started) -> Optional[float]:
+    """Session files store startedAt as epoch milliseconds (number). Returns
+    unix seconds, or None if unparseable."""
+    if not started:
+        return None
+    try:
+        v = float(started)
+    except (TypeError, ValueError):
+        return None
+    # Values > 1e12 are epoch milliseconds; otherwise assume seconds
+    return v / 1000 if v > 1e12 else v
+
+
+def _parse_heartbeat(hb: Optional[str]) -> Optional[float]:
+    """Parse SQLite heartbeat_at (ISO-8601 UTC, possibly with trailing Z) to unix seconds."""
+    if not hb:
+        return None
+    try:
+        dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def _list_sessions(claim_map: Optional[dict] = None) -> list[dict]:
+    """List Claude Code sessions, classifying each as alive/stale.
+
+    A session is alive when the PID probe succeeds AND at least one of:
+      - a tkt claim heartbeat is within SESSION_HEARTBEAT_FRESH_S
+      - the session file itself is younger than SESSION_FRESH_S
+    Otherwise it's treated as stale (likely a recycled PID) and reported as
+    alive=False so the UI can surface/clean it.
+    """
     if not CLAUDE_SESSIONS_DIR.exists():
         return []
+    if claim_map is None:
+        claim_map = {}
+
+    now = time.time()
     sessions = []
     for f in CLAUDE_SESSIONS_DIR.glob("*.json"):
         try:
             data = jsonlib.loads(f.read_text())
-            pid = data.get("pid")
-            # Check if process is still alive
-            alive = False
-            if pid:
-                try:
-                    os.kill(pid, 0)
-                    alive = True
-                except (OSError, ProcessLookupError):
-                    pass
-            sessions.append({
-                "file": f.name,
-                "sessionId": data.get("sessionId", ""),
-                "cwd": data.get("cwd", ""),
-                "pid": pid,
-                "alive": alive,
-                "startedAt": data.get("startedAt", ""),
-                "name": data.get("name"),
-            })
         except Exception:
             continue
+
+        pid = data.get("pid")
+        session_id = data.get("sessionId", "")
+        started_at = data.get("startedAt", "")
+        started_s = _parse_started_at(started_at)
+        age_s = (now - started_s) if started_s else None
+
+        claim = claim_map.get(session_id) or {}
+        heartbeat_at = claim.get("heartbeat_at")
+        hb_s = _parse_heartbeat(heartbeat_at)
+        heartbeat_age_s = (now - hb_s) if hb_s else None
+
+        # PID probe (signal 0 = existence check)
+        pid_alive = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                pid_alive = True
+            except (OSError, ProcessLookupError):
+                pass
+
+        # Freshness gate: either recent heartbeat or young session file
+        has_fresh_heartbeat = heartbeat_age_s is not None and heartbeat_age_s <= SESSION_HEARTBEAT_FRESH_S
+        is_fresh_file = age_s is not None and age_s <= SESSION_FRESH_S
+
+        if not pid_alive:
+            alive, liveness_reason = False, "dead_pid"
+        elif has_fresh_heartbeat:
+            alive, liveness_reason = True, "pid_and_heartbeat"
+        elif is_fresh_file:
+            alive, liveness_reason = True, "pid_and_fresh_file"
+        else:
+            alive, liveness_reason = False, "stale_pid_reuse"
+
+        sessions.append({
+            "file": f.name,
+            "sessionId": session_id,
+            "cwd": data.get("cwd", ""),
+            "pid": pid,
+            "alive": alive,
+            "startedAt": started_at,
+            "age_hours": round(age_s / 3600, 2) if age_s is not None else None,
+            "liveness_reason": liveness_reason,
+            "name": data.get("name"),
+            "task_id": claim.get("task_id"),
+            "heartbeat_at": heartbeat_at,
+        })
+
     # Sort: alive first, then by startedAt desc
-    sessions.sort(key=lambda s: (not s["alive"], s.get("startedAt", "")), reverse=False)
-    sessions.sort(key=lambda s: s["alive"], reverse=True)
+    sessions.sort(key=lambda s: (not s["alive"], -(_parse_started_at(s["startedAt"]) or 0)))
     return sessions
 
 
 @router.get("/api/sessions", response_class=JSONResponse)
 async def api_sessions():
-    sessions = _list_sessions()
-
-    # Augment sessions with task linkage from claims table
+    # Load claims once; _list_sessions uses them for heartbeat freshness check.
     try:
         conn = sqlite3.connect(str(TKT_DB_PATH))
         conn.row_factory = sqlite3.Row
@@ -331,12 +659,7 @@ async def api_sessions():
     except Exception:
         claim_map = {}
 
-    for session in sessions:
-        claim = claim_map.get(session.get("sessionId", ""), {})
-        session["task_id"] = claim.get("task_id")
-        session["heartbeat_at"] = claim.get("heartbeat_at")
-
-    return JSONResponse(sessions)
+    return JSONResponse(_list_sessions(claim_map))
 
 
 @router.get("/api/pipeline-state", response_class=JSONResponse)
@@ -495,8 +818,6 @@ async def api_task_detail(task_id: int):
         FROM task_notes WHERE task_id = ? ORDER BY created_at DESC
     """, [task_id]).fetchall()
 
-    conn.close()
-
     # Derive progress steps from history
     steps = []
     for h in history:
@@ -521,6 +842,41 @@ async def api_task_detail(task_id: int):
         for path_match, _ in paths:
             docs.append({"type": "reference", "path": path_match})
 
+    # Hierarchy context
+    ancestors = list_ancestors(conn, task_id)
+    parent = ancestors[0] if ancestors else None
+
+    children_rows: list[dict] = []
+    siblings_rows: list[dict] = []
+    progress = None
+
+    if t["type"] in PARENT_TYPES:
+        rows = conn.execute(
+            """
+            SELECT id, title, type, status, priority, parent_id, slug
+            FROM tasks WHERE parent_id = ? ORDER BY created_at ASC
+            """,
+            [task_id],
+        ).fetchall()
+        children_rows = [dict(r) for r in rows]
+        for c in children_rows:
+            if c["type"] in PARENT_TYPES:
+                c["progress"] = compute_progress(conn, c["id"])
+                c["children_count"] = count_children(conn, c["id"])
+        progress = compute_progress(conn, task_id)
+
+    if t["parent_id"] is not None:
+        rows = conn.execute(
+            """
+            SELECT id, title, type, status, priority, parent_id, slug
+            FROM tasks WHERE parent_id = ? AND id != ? ORDER BY created_at ASC
+            """,
+            [t["parent_id"], task_id],
+        ).fetchall()
+        siblings_rows = [dict(r) for r in rows]
+
+    conn.close()
+
     return JSONResponse({
         "task": {
             "id": t["id"],
@@ -532,13 +888,23 @@ async def api_task_detail(task_id: int):
             "domain": t["domain"],
             "pr_number": t["pr_number"],
             "branch": t["branch"],
+            "parent_id": t["parent_id"],
+            "project_id": t["project_id"],
             "project_name": t["project_name"],
             "repo_path": t.get("repo_path"),
             "spec_path": t.get("spec_path"),
             "created_at": t["created_at"],
             "updated_at": t["updated_at"],
             "completed_at": t.get("completed_at"),
+            "due_date": t.get("due_date"),
+            "slug": t.get("slug"),
+            "context": t.get("context"),
         },
+        "parent": parent,
+        "ancestors": ancestors,
+        "children": children_rows,
+        "siblings": siblings_rows,
+        "progress": progress,
         "steps": steps,
         "notes": [dict(n) for n in notes],
         "docs": docs,

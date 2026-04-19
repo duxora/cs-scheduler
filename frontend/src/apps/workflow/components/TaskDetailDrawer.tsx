@@ -1,7 +1,16 @@
 import { useEffect } from 'react'
+import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import { PriorityBadge, StatusBadge } from './ui/Badge'
+import { TypeBadge } from './ui/TypeBadge'
+import { StatusGlyph } from './ui/StatusGlyph'
+import { ProgressBar } from './ui/ProgressBar'
 import { TrashIcon } from './ui/icons'
+import { ParentBreadcrumb } from './common/ParentBreadcrumb'
+import { ParentContextCard } from './common/ParentContextCard'
+import { isParentType } from '../lib/tokens'
+import type { TaskRef, ProgressSummary } from '../types'
+import { treePath } from '../lib/urls'
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -15,12 +24,16 @@ interface TaskDetail {
   domain: string | null
   pr_number: number | null
   branch: string | null
+  parent_id: number | null
+  project_id: string
   project_name: string
   repo_path: string | null
   spec_path: string | null
   created_at: string
   updated_at: string
   completed_at: string | null
+  due_date: string | null
+  slug?: string | null
 }
 
 interface HistoryStep {
@@ -42,6 +55,11 @@ interface Doc {
 
 interface TaskDetailResponse {
   task: TaskDetail
+  parent: TaskRef | null
+  ancestors: TaskRef[]
+  children: TaskRef[]
+  siblings: TaskRef[]
+  progress: ProgressSummary | null
   steps: HistoryStep[]
   notes: Note[]
   docs: Doc[]
@@ -82,9 +100,15 @@ interface TaskDetailDrawerProps {
   taskId: number | null
   onClose: () => void
   onDelete?: (id: number) => Promise<void>
+  /**
+   * Switch the drawer to a different task (siblings list).
+   * When omitted, falls back to navigating the current task URL param —
+   * that works for the TaskBoard route which manages `?task=` itself.
+   */
+  onNavigate?: (id: number) => void
 }
 
-export default function TaskDetailDrawer({ taskId, onClose, onDelete }: TaskDetailDrawerProps) {
+export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate }: TaskDetailDrawerProps) {
   const { data, error } = useSWR<TaskDetailResponse>(
     taskId != null ? `/workflow/api/tasks/${taskId}/detail` : null,
     fetcher,
@@ -122,6 +146,11 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete }: TaskDeta
         <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b" style={{ borderColor: 'var(--wf-border)' }}>
           {data ? (
             <div className="flex-1 min-w-0 mr-2">
+              {data.ancestors.length > 0 && (
+                <div className="mb-1">
+                  <ParentBreadcrumb ancestors={data.ancestors} />
+                </div>
+              )}
               <p className="text-[10px] text-gray-500 mb-0.5">#{data.task.id}</p>
               <p className="text-sm font-medium text-gray-100 truncate">{data.task.title}</p>
             </div>
@@ -166,6 +195,7 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete }: TaskDeta
             <div className="flex flex-col gap-5">
               {/* Badges */}
               <div className="flex flex-wrap gap-1.5">
+                <TypeBadge type={data.task.type} />
                 <PriorityBadge priority={data.task.priority} />
                 <StatusBadge status={data.task.status} />
                 {data.task.domain && (
@@ -173,10 +203,105 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete }: TaskDeta
                     {data.task.domain}
                   </span>
                 )}
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800 text-gray-500 border border-gray-700">
-                  {data.task.type}
-                </span>
               </div>
+
+              {/* Parent context — shown only when this task has a parent */}
+              {data.parent && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Parent</p>
+                  <ParentContextCard
+                    parent={data.parent}
+                    root={data.ancestors.length > 1 ? data.ancestors[data.ancestors.length - 1] : null}
+                  />
+                </div>
+              )}
+
+              {/* Progress — shown only for parent-type rows */}
+              {isParentType(data.task.type) && data.progress && data.progress.total > 0 && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Progress</p>
+                  <ProgressBar
+                    done={data.progress.done}
+                    total={data.progress.total}
+                    showCounts
+                    showPercent
+                    height={2}
+                  />
+                  <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-500">
+                    <span><span className="text-emerald-400 font-medium">{data.progress.done}</span> done</span>
+                    <span><span className="text-amber-400 font-medium">{data.progress.in_progress}</span> in flight</span>
+                    <span><span className="text-blue-400 font-medium">{data.progress.open}</span> open</span>
+                  </div>
+                  <Link
+                    to={treePath(data.task.id, data.task.slug)}
+                    className="mt-2 inline-block text-[11px] text-indigo-400 hover:text-indigo-300"
+                  >
+                    Open full tree →
+                  </Link>
+                </div>
+              )}
+
+              {/* Children list (parent rows only) */}
+              {data.children.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                    Children ({data.children.length})
+                  </p>
+                  <ul className="flex flex-col gap-0.5">
+                    {data.children.map((c) => (
+                      <li key={c.id}>
+                        <Link
+                          to={treePath(c.id, c.slug)}
+                          className="flex items-center gap-2 py-1 px-1.5 rounded text-xs hover:bg-slate-800/60 transition-colors"
+                        >
+                          <StatusGlyph status={c.status} />
+                          <TypeBadge type={c.type} />
+                          <span className="font-mono text-[10px] text-slate-500 shrink-0">#{c.id}</span>
+                          <span className="flex-1 min-w-0 text-slate-200 truncate">{c.title}</span>
+                          {c.progress && c.progress.total > 0 && (
+                            <span className="text-[10px] font-mono text-slate-400 shrink-0 tabular-nums">
+                              {c.progress.done}/{c.progress.total}
+                            </span>
+                          )}
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* Siblings list (non-root tasks) */}
+              {data.siblings.length > 0 && (
+                <div>
+                  <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                    Siblings ({data.siblings.length})
+                  </p>
+                  <ul className="flex flex-col gap-0.5">
+                    {data.siblings.map((s) => (
+                      <li key={s.id}>
+                        <button
+                          onClick={() => {
+                            if (onNavigate) {
+                              onNavigate(s.id)
+                            } else {
+                              const url = new URL(window.location.href)
+                              url.searchParams.set('task', String(s.id))
+                              window.history.pushState(null, '', url.toString())
+                              window.dispatchEvent(new PopStateEvent('popstate'))
+                            }
+                          }}
+                          className="flex items-center gap-2 py-1 px-1.5 w-full text-left rounded text-xs hover:bg-slate-800/60 transition-colors"
+                        >
+                          <StatusGlyph status={s.status} />
+                          <TypeBadge type={s.type} />
+                          <span className="font-mono text-[10px] text-slate-500 shrink-0">#{s.id}</span>
+                          <span className="flex-1 min-w-0 text-slate-200 truncate">{s.title}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
 
               {/* Description */}
               {data.task.description && (

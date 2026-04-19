@@ -3,8 +3,9 @@ import type { DetailTarget, PipelineType } from '../types'
 import { usePipelineState } from '../hooks/usePipelineState'
 import { useNotifications } from '../hooks/useNotifications'
 import { useUrlParam } from '../hooks/useUrlParam'
-import PipelineList from '../components/PipelineList'
+import PipelineBoard from '../components/PipelineBoard'
 import DetailPanel from '../components/DetailPanel'
+import FilterBar from '../components/common/FilterBar'
 
 const PIPELINE_TYPES: { value: PipelineType | ''; label: string }[] = [
   { value: '', label: 'All types' },
@@ -79,38 +80,35 @@ export default function PipelinesPage() {
   return (
     <div className="flex flex-col h-full text-gray-100 bg-gray-950">
       {/* Filter bar */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-800 shrink-0">
-        <select
+      <FilterBar className="py-2" style={{ borderColor: 'rgb(31 41 55)' }}>
+        <FilterBar.Select
           value={projectFilter}
           onChange={(e) => setProjectFilter(e.target.value)}
-          className="text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300"
           aria-label="Filter by domain"
         >
           <option value="">All domains</option>
           {projects.map((d) => (
             <option key={d} value={d}>{d}</option>
           ))}
-        </select>
-        <select
+        </FilterBar.Select>
+        <FilterBar.Select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as PipelineType | '')}
-          className="text-xs bg-gray-900 border border-gray-700 rounded px-2 py-1 text-gray-300"
           aria-label="Filter by pipeline type"
         >
           {PIPELINE_TYPES.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
-        <span className="text-[10px] text-gray-600 ml-auto">
-          {isLoading && 'Loading...'}
-          {!isLoading && `${filtered.length} pipeline${filtered.length !== 1 ? 's' : ''}`}
-        </span>
+        </FilterBar.Select>
+        <FilterBar.Count>
+          {isLoading ? 'Loading...' : `${filtered.length} pipeline${filtered.length !== 1 ? 's' : ''}`}
+        </FilterBar.Count>
         {error && (
           <span className="text-[10px] text-red-400 bg-red-950 px-1.5 py-0.5 rounded border border-red-800">
             API error
           </span>
         )}
-      </div>
+      </FilterBar>
 
       {/* Content */}
       <div className="flex flex-1 min-h-0">
@@ -121,7 +119,7 @@ export default function PipelinesPage() {
             </div>
           )}
           {!isLoading && (
-            <PipelineList pipelines={filtered} onSelect={setSelected} />
+            <PipelineBoard pipelines={filtered} onSelect={setSelected} />
           )}
         </div>
 

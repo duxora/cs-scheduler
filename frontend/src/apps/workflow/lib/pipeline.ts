@@ -91,3 +91,80 @@ export function getPipelineProgress(pipeline: PipelineState): { done: number; to
   }
   return { done, total }
 }
+
+// ── Attention classification ─────────────────────────────────────────────────
+
+export type AttentionLane = 'needs_you' | 'running' | 'done'
+
+export interface ClassifiedPipeline {
+  pipeline: PipelineState
+  lane: AttentionLane
+  reason: string | null
+  progress: { done: number; total: number }
+  activeStep: string | null
+}
+
+export function getAttentionReason(p: PipelineState): string | null {
+  const order = getStepOrder(p.pipeline, p.size)
+  for (const step of order) {
+    const state = p.steps[step]
+    if (state?.status === 'failed') {
+      return `${getStepLabel(step)} failed`
+    }
+  }
+
+  if (p.stale) {
+    const active = getActiveStep(p)
+    if (active && ['review', 'pr'].includes(active)) {
+      return `Stale — may need review`
+    }
+    return 'Stale — no heartbeat'
+  }
+
+  return null
+}
+
+export function classifyPipeline(p: PipelineState): ClassifiedPipeline {
+  const progress = getPipelineProgress(p)
+  const activeStep = getActiveStep(p)
+  const reason = getAttentionReason(p)
+
+  let lane: AttentionLane
+  if (reason) {
+    lane = 'needs_you'
+  } else if (progress.done >= progress.total) {
+    lane = 'done'
+  } else {
+    lane = 'running'
+  }
+
+  return { pipeline: p, lane, reason, progress, activeStep }
+}
+
+export function classifyAndGroup(pipelines: PipelineState[]): Record<AttentionLane, ClassifiedPipeline[]> {
+  const groups: Record<AttentionLane, ClassifiedPipeline[]> = {
+    needs_you: [],
+    running: [],
+    done: [],
+  }
+
+  for (const p of pipelines) {
+    const c = classifyPipeline(p)
+    groups[c.lane].push(c)
+  }
+
+  // Sort: needs_you by failed-first then stale, running by elapsed desc, done by elapsed desc
+  groups.needs_you.sort((a, b) => {
+    const aFailed = a.reason?.includes('failed') ? 0 : 1
+    const bFailed = b.reason?.includes('failed') ? 0 : 1
+    return aFailed - bFailed
+  })
+  groups.running.sort((a, b) =>
+    new Date(a.pipeline.started_at).getTime() - new Date(b.pipeline.started_at).getTime()
+  )
+  groups.done.sort((a, b) =>
+    new Date(b.pipeline.started_at).getTime() - new Date(a.pipeline.started_at).getTime()
+  )
+
+  return groups
+}

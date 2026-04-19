@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { HUB_APPS } from '../shared/apps'
 import { useThemeContext } from '../shared/ThemeContext'
-import type { Theme } from '../apps/workflow/lib/useTheme'
+import type { Theme } from '../shared/useTheme'
 
 interface SidebarProps {
   onNavigate?: () => void

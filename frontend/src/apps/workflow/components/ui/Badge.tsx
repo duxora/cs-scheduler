@@ -3,7 +3,7 @@
  * Single source of truth for badge appearance — delegates to design tokens.
  */
 
-import { Priority, Status } from '../../lib/tokens'
+import { Priority, Status, ContextToken } from '../../lib/tokens'
 
 interface PriorityBadgeProps {
   priority: string
@@ -48,6 +48,47 @@ export function PriorityDot({ priority, title }: PriorityDotProps) {
     <span
       className={`shrink-0 w-1.5 h-1.5 rounded-full ${cls}`}
       title={title ?? priority}
+    />
+  )
+}
+
+interface ContextBadgeProps {
+  context: string | null
+  className?: string
+}
+
+export function ContextBadge({ context, className = '' }: ContextBadgeProps) {
+  if (!context) {
+    return (
+      <span className={`text-[10px] px-1.5 py-px rounded ${ContextToken.fallback.badge} ${className}`}>
+        {ContextToken.fallback.display}
+      </span>
+    )
+  }
+  const key = context as keyof typeof ContextToken.badge
+  const cls = Object.hasOwn(ContextToken.badge, key) ? ContextToken.badge[key] : ContextToken.fallback.badge
+  const label = Object.hasOwn(ContextToken.display, key) ? ContextToken.display[key] : ContextToken.fallback.display
+  return (
+    <span className={`text-[10px] px-1.5 py-px rounded ${cls} ${className}`}>
+      {label}
+    </span>
+  )
+}
+
+interface ContextDotProps {
+  context: string | null
+  title?: string
+}
+
+export function ContextDot({ context, title }: ContextDotProps) {
+  const key = context as keyof typeof ContextToken.dot
+  const cls = context && Object.hasOwn(ContextToken.dot, key)
+    ? ContextToken.dot[key]
+    : ContextToken.fallback.dot
+  return (
+    <span
+      className={`shrink-0 w-1.5 h-1.5 rounded-full ${cls}`}
+      title={title ?? context ?? 'unclassified'}
     />
   )
 }

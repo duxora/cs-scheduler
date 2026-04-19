@@ -51,6 +51,7 @@ export default function SortBuilder({ controller }: SortBuilderProps) {
   // Update live region whenever criteria change so SR users hear the new order.
   useEffect(() => {
     if (criteria.length === 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAnnouncement('Sort cleared.')
       return
     }

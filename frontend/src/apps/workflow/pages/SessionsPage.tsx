@@ -66,7 +66,6 @@ function PreviewPanel({ sessionId }: PreviewPanelProps) {
         {shownTurns.map((turn, i) => (
           <div
             // Turns don't have stable IDs; index is the only key available
-            // eslint-disable-next-line react/no-array-index-key
             key={i}
             className={`px-2 py-1.5 rounded text-[10px] leading-relaxed ${
               turn.role === 'user'

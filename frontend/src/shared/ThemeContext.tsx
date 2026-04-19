@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { Theme } from '../apps/workflow/lib/useTheme'
+import type { Theme } from './useTheme'
 
 interface ThemeContextValue {
   theme: Theme

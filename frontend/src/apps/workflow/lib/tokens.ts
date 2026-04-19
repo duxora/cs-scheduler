@@ -117,6 +117,73 @@ export const Status = {
   },
 } as const
 
+// ── Type ───────────────────────────────────────────────────────────────────
+//
+// Task type hierarchy — parent-capable (initiative, epic) and leaves (task,
+// feature, bug, chore). Mirrors backlog/src/models/task.ts. Keep the map
+// structure parallel to Priority/Status so the lookup-with-fallback pattern
+// transfers directly.
+
+export const Type = {
+  /** Parent-capable types — containers, not claimable work */
+  parents: ['initiative', 'epic'] as const,
+  /** Leaf types — claimable units of work */
+  leaves: ['task', 'feature', 'bug', 'chore'] as const,
+
+  /** Pill/badge for inline + detail meta rows */
+  badge: {
+    initiative: 'bg-purple-900/60 text-purple-300 border border-purple-700/50',
+    epic:       'bg-indigo-900/60 text-indigo-300 border border-indigo-700/50',
+    task:       'bg-slate-800/60 text-slate-300 border border-slate-700/50',
+    feature:    'bg-blue-900/60 text-blue-300 border border-blue-700/50',
+    bug:        'bg-red-900/60 text-red-300 border border-red-700/50',
+    chore:      'bg-teal-900/60 text-teal-300 border border-teal-700/50',
+  },
+
+  /** Filled dot — compact visual signal next to titles */
+  dot: {
+    initiative: 'bg-purple-400',
+    epic:       'bg-indigo-400',
+    task:       'bg-slate-400',
+    feature:    'bg-blue-400',
+    bug:        'bg-red-400',
+    chore:      'bg-teal-400',
+  },
+
+  /** Muted text label */
+  label: {
+    initiative: 'text-purple-300',
+    epic:       'text-indigo-300',
+    task:       'text-slate-300',
+    feature:    'text-blue-300',
+    bug:        'text-red-300',
+    chore:      'text-teal-300',
+  },
+
+  /** Human-readable display strings */
+  display: {
+    initiative: 'Initiative',
+    epic:       'Epic',
+    task:       'Task',
+    feature:    'Feature',
+    bug:        'Bug',
+    chore:      'Chore',
+  },
+
+  /** Fallbacks for unknown/future type values */
+  fallback: {
+    badge:   'bg-slate-800/60 text-slate-400 border border-slate-700/50',
+    dot:     'bg-slate-500',
+    label:   'text-slate-400',
+    display: 'Unknown',
+  },
+} as const
+
+/** True if the type is parent-capable (can contain children). */
+export function isParentType(type: string): boolean {
+  return (Type.parents as readonly string[]).includes(type)
+}
+
 // ── Phase ──────────────────────────────────────────────────────────────────
 
 export const Phases = [
@@ -164,3 +231,63 @@ export const SortFieldMap: Record<SortFieldKey, SortFieldDef> = SortFields.reduc
   (acc, f) => { acc[f.key] = f; return acc },
   {} as Record<SortFieldKey, SortFieldDef>,
 )
+
+// ── Context (life area) ────────────────────────────────────────────────────
+//
+// Classifies projects/epics/tasks by life area. Mirrors the `context` column
+// added in backlog/src/models/{project,task}.ts.
+
+export const ContextToken = {
+  order: {
+    work: 0,
+    family: 1,
+    personal: 2,
+  },
+
+  /** Pill/badge (detail + filter) */
+  badge: {
+    work:     'bg-sky-900/60 text-sky-300 border border-sky-700/50',
+    family:   'bg-rose-900/60 text-rose-300 border border-rose-700/50',
+    personal: 'bg-emerald-900/60 text-emerald-300 border border-emerald-700/50',
+  },
+
+  /** Filled dot beside titles */
+  dot: {
+    work:     'bg-sky-400',
+    family:   'bg-rose-400',
+    personal: 'bg-emerald-400',
+  },
+
+  /** Section-accent color for grouped lists */
+  accent: {
+    work:     'text-sky-300',
+    family:   'text-rose-300',
+    personal: 'text-emerald-300',
+  },
+
+  /** Human-readable display strings */
+  display: {
+    work:     'Work',
+    family:   'Family',
+    personal: 'Personal',
+  },
+
+  /** Icon glyph (emoji-free — use a short symbol) */
+  symbol: {
+    work:     'W',
+    family:   'F',
+    personal: 'P',
+  },
+
+  /** Fallback for unset/unknown */
+  fallback: {
+    badge:   'bg-slate-800/60 text-slate-400 border border-slate-700/50',
+    dot:     'bg-slate-600',
+    accent:  'text-slate-400',
+    display: 'Unclassified',
+    symbol:  '·',
+  },
+} as const
+
+export type ContextKey = keyof typeof ContextToken.display
+export const CONTEXT_KEYS: readonly ContextKey[] = ['work', 'family', 'personal'] as const

@@ -1,8 +1,10 @@
 import { useInsights } from '../hooks/useInsights'
 import { useUrlParam } from '../hooks/useUrlParam'
+import { SegmentedControl } from '../components/ui/SegmentedControl'
 import FlowEfficiencyCards from '../components/FlowEfficiencyCards'
 import InsightsStrip from '../components/InsightsStrip'
 import InsightAlerts from '../components/InsightAlerts'
+import FilterBar from '../components/common/FilterBar'
 
 const PIPELINE_OPTIONS = [
   { value: '', label: 'All pipelines' },
@@ -40,43 +42,34 @@ export default function InsightsPage() {
   return (
     <div className="h-full overflow-y-auto bg-gray-950 p-4 flex flex-col gap-4">
       {/* Filter bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <select
+      <FilterBar className="px-0 border-none py-0">
+        <FilterBar.Select
           value={pipeline}
           onChange={(e) => setPipeline(e.target.value)}
-          className="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-gray-600"
+          selectClassName="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-gray-600"
         >
           {PIPELINE_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
+        </FilterBar.Select>
 
-        <select
+        <FilterBar.Select
           value={size}
           onChange={(e) => setSize(e.target.value)}
-          className="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-gray-600"
+          selectClassName="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1.5 focus:outline-none focus:border-gray-600"
         >
           {SIZE_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>{opt.label}</option>
           ))}
-        </select>
+        </FilterBar.Select>
 
-        <div className="flex items-center gap-1 ml-auto">
-          {PERIOD_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => setPeriod(opt.value)}
-              className={`px-2.5 py-1 text-xs rounded transition-colors ${
-                period === opt.value
-                  ? 'bg-gray-700 text-white'
-                  : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800/50'
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-      </div>
+        <SegmentedControl
+          options={PERIOD_OPTIONS}
+          value={period}
+          onChange={setPeriod}
+          containerClassName="ml-auto"
+        />
+      </FilterBar>
 
       {/* Loading / error states */}
       {isLoading && (
