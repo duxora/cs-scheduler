@@ -8,6 +8,7 @@ import { ProgressBar } from './ui/ProgressBar'
 import { TrashIcon } from './ui/icons'
 import { ParentBreadcrumb } from './common/ParentBreadcrumb'
 import { ParentContextCard } from './common/ParentContextCard'
+import { EpicSelector } from './common/EpicSelector'
 import { isParentType } from '../lib/tokens'
 import type { TaskRef, ProgressSummary } from '../types'
 import { treePath } from '../lib/urls'
@@ -109,7 +110,7 @@ interface TaskDetailDrawerProps {
 }
 
 export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate }: TaskDetailDrawerProps) {
-  const { data, error } = useSWR<TaskDetailResponse>(
+  const { data, error, mutate } = useSWR<TaskDetailResponse>(
     taskId != null ? `/workflow/api/tasks/${taskId}/detail` : null,
     fetcher,
   )
@@ -214,6 +215,16 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                     root={data.ancestors.length > 1 ? data.ancestors[data.ancestors.length - 1] : null}
                   />
                 </div>
+              )}
+
+              {/* Epic selector — leaf-task rows (exclude initiative, which has no meaningful parent here) */}
+              {data.task.type !== 'initiative' && (
+                <EpicSelector
+                  taskId={data.task.id}
+                  projectId={data.task.project_id}
+                  currentParent={data.parent}
+                  onChange={async () => { await mutate() }}
+                />
               )}
 
               {/* Progress — shown only for parent-type rows */}

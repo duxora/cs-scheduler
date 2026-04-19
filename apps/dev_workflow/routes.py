@@ -1414,6 +1414,136 @@ async def api_move_task(task_id: int, request: Request):
     return JSONResponse({"ok": True, "moved": {"from": old_project, "to": target_project}})
 
 
+def _slugify(title: str, max_len: int = 60) -> str:
+    import re
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:max_len] if s else "untitled"
+
+
+@router.post("/api/epics", response_class=JSONResponse)
+async def api_create_epic(request: Request):
+    """Create an epic. Optional `assign_to_task_id` attaches an existing task as a child
+    in the same transaction so the caller never ends up with an orphan on partial failure.
+    """
+    body = await request.json()
+    project_id = (body.get("project_id") or "").strip()
+    title = (body.get("title") or "").strip()
+    priority = body.get("priority") or "medium"
+    domain = body.get("domain") or None
+    assign_to = body.get("assign_to_task_id")
+
+    if not project_id:
+        return JSONResponse({"error": "project_id required"}, status_code=400)
+    if not title:
+        return JSONResponse({"error": "title required"}, status_code=400)
+    if priority not in VALID_PRIORITIES:
+        return JSONResponse({"error": f"invalid priority, must be one of {sorted(VALID_PRIORITIES)}"}, status_code=400)
+
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"error": "db not found"}, status_code=500)
+
+    target = conn.execute("SELECT id FROM projects WHERE id = ?", [project_id]).fetchone()
+    if not target:
+        conn.close()
+        return JSONResponse({"error": f"project '{project_id}' not found"}, status_code=404)
+
+    if assign_to is not None:
+        child = conn.execute(
+            "SELECT id, project_id, parent_id FROM tasks WHERE id = ?", [assign_to]
+        ).fetchone()
+        if not child:
+            conn.close()
+            return JSONResponse({"error": f"assign_to_task_id #{assign_to} not found"}, status_code=404)
+        if child["project_id"] != project_id:
+            conn.close()
+            return JSONResponse(
+                {"error": "assign_to_task_id must belong to the same project"},
+                status_code=400,
+            )
+
+    try:
+        cur = conn.execute(
+            "INSERT INTO tasks (project_id, title, type, priority, status, domain, slug) "
+            "VALUES (?, ?, 'epic', ?, 'open', ?, ?)",
+            [project_id, title, priority, domain, _slugify(title)],
+        )
+        new_id = cur.lastrowid
+
+        if assign_to is not None:
+            old_parent = child["parent_id"]
+            conn.execute("UPDATE tasks SET parent_id = ? WHERE id = ?", [new_id, assign_to])
+            conn.execute(
+                "INSERT INTO task_history (task_id, field, old_value, new_value, changed_by) "
+                "VALUES (?, 'parent_id', ?, ?, 'dashboard')",
+                [assign_to, str(old_parent) if old_parent is not None else None, str(new_id)],
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        raise
+
+    row = conn.execute(
+        "SELECT id, project_id, title, type, priority, status, domain, parent_id, slug, created_at "
+        "FROM tasks WHERE id = ?",
+        [new_id],
+    ).fetchone()
+    conn.close()
+    return JSONResponse(dict(row), status_code=201)
+
+
+@router.post("/api/tasks/{task_id}/set-parent", response_class=JSONResponse)
+async def api_set_parent(task_id: int, request: Request):
+    """Assign or clear a task's parent (epic/initiative). Body: {parent_id: N|null}."""
+    body = await request.json()
+    parent_id = body.get("parent_id")
+
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"error": "db not found"}, status_code=500)
+
+    task = conn.execute("SELECT id, project_id, parent_id FROM tasks WHERE id = ?", [task_id]).fetchone()
+    if not task:
+        conn.close()
+        return JSONResponse({"error": "task not found"}, status_code=404)
+
+    if parent_id is not None:
+        parent = conn.execute(
+            "SELECT id, project_id, type FROM tasks WHERE id = ?", [parent_id]
+        ).fetchone()
+        if not parent:
+            conn.close()
+            return JSONResponse({"error": f"parent task #{parent_id} not found"}, status_code=404)
+        if parent["type"] not in PARENT_TYPES:
+            conn.close()
+            return JSONResponse(
+                {"error": f"parent must be one of {list(PARENT_TYPES)}, got '{parent['type']}'"},
+                status_code=400,
+            )
+        if parent["project_id"] != task["project_id"]:
+            conn.close()
+            return JSONResponse(
+                {"error": "parent must belong to the same project as the task"},
+                status_code=400,
+            )
+        if parent_id == task_id:
+            conn.close()
+            return JSONResponse({"error": "task cannot be its own parent"}, status_code=400)
+
+    old_parent = task["parent_id"]
+    conn.execute("UPDATE tasks SET parent_id = ? WHERE id = ?", [parent_id, task_id])
+    conn.execute(
+        "INSERT INTO task_history (task_id, field, old_value, new_value, changed_by) "
+        "VALUES (?, 'parent_id', ?, ?, 'dashboard')",
+        [task_id, str(old_parent) if old_parent is not None else None,
+         str(parent_id) if parent_id is not None else None],
+    )
+    conn.commit()
+    conn.close()
+    return JSONResponse({"ok": True, "task_id": task_id, "parent_id": parent_id})
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _detect_phase(task) -> str:
