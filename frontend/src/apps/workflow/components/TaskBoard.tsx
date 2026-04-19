@@ -34,6 +34,7 @@ export default function TaskBoard() {
   )
   const [selectedTasks, setSelectedTasks] = useState<Set<number>>(new Set())
   const [domainMapOpen, setDomainMapOpen] = useState(false)
+  const [showIdle, setShowIdle] = useState(false)
 
   const sortController = useSortCriteria()
   const { tasks, projects, tasksError, projectsError, mutateTasks } = useTaskBoard(projectFilter, statusFilter)
@@ -42,6 +43,19 @@ export default function TaskBoard() {
     await fetch(`/workflow/api/tasks/${id}`, { method: 'DELETE' })
     await mutateTasks()
   }, [mutateTasks])
+
+  const { visibleProjects, idleCount } = useMemo(() => {
+    const all = projects ?? []
+    // A project is "idle" when no work is in flight. Always keep the currently
+    // selected project visible so a URL-restored filter doesn't silently vanish.
+    const visible = all.filter((p) => {
+      if (showIdle) return true
+      if (p.project_id === projectFilter) return true
+      return p.open_count > 0 || p.in_progress_count > 0
+    })
+    const idle = all.length - all.filter((p) => p.open_count > 0 || p.in_progress_count > 0).length
+    return { visibleProjects: visible, idleCount: idle }
+  }, [projects, showIdle, projectFilter])
 
   const allCounts = useMemo(() => {
     if (!projects) return { open: 0, inProgress: 0, done: 0 }
@@ -157,7 +171,7 @@ export default function TaskBoard() {
           active={projectFilter === ''}
           onClick={() => setProjectFilter('')}
         />
-        {(projects ?? []).map((p) => (
+        {visibleProjects.map((p) => (
           <ProjectCard
             key={p.project_id}
             label={p.project_name}
@@ -168,6 +182,16 @@ export default function TaskBoard() {
             onClick={() => setProjectFilter(projectFilter === p.project_id ? '' : p.project_id)}
           />
         ))}
+        {idleCount > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowIdle((v) => !v)}
+            className="text-[11px] text-slate-400 hover:text-slate-200 px-2 py-1 rounded-lg border border-slate-700/50 hover:border-slate-500/50 self-center transition-all"
+            title={showIdle ? 'Hide idle projects (no open or in-progress tasks)' : 'Show idle projects (no open or in-progress tasks)'}
+          >
+            {showIdle ? `Hide ${idleCount} idle` : `+ ${idleCount} idle`}
+          </button>
+        )}
         {projectsError && (
           <span className="text-[11px] text-red-300 self-center">Failed to load projects</span>
         )}
@@ -212,7 +236,7 @@ export default function TaskBoard() {
           selectClassName="text-xs bg-slate-800/80 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300 focus:border-blue-500/60 focus:outline-none transition-all"
         >
           <option value="">All Projects</option>
-          {(projects ?? []).map((p) => (
+          {visibleProjects.map((p) => (
             <option key={p.project_id} value={p.project_id}>{p.project_name}</option>
           ))}
         </FilterBar.Select>
