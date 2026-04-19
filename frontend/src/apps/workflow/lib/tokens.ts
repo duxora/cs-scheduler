@@ -291,3 +291,26 @@ export const ContextToken = {
 
 export type ContextKey = keyof typeof ContextToken.display
 export const CONTEXT_KEYS: readonly ContextKey[] = ['work', 'family', 'personal'] as const
+
+// ── Mode (solo / team) ─────────────────────────────────────────────────────
+//
+// Project-level working mode. Solo = single dev drives the project; Team =
+// multiple contributors (affects review/PR gating downstream).
+
+export const ModeToken = {
+  badge: {
+    solo: 'bg-violet-900/60 text-violet-300 border border-violet-700/50',
+    team: 'bg-cyan-900/60 text-cyan-300 border border-cyan-700/50',
+  },
+  display: {
+    solo: 'Solo',
+    team: 'Team',
+  },
+  fallback: {
+    badge:   'bg-slate-800/60 text-slate-400 border border-slate-700/50',
+    display: 'Unset',
+  },
+} as const
+
+export type ModeKey = keyof typeof ModeToken.display
+export const MODE_KEYS: readonly ModeKey[] = ['solo', 'team'] as const

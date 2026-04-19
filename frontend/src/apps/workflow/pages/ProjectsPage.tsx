@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import type { ProjectInsights } from '../types'
@@ -7,6 +7,7 @@ import { ContextToken, CONTEXT_KEYS, Priority, type ContextKey } from '../lib/to
 import { formatAgeCoarse } from '../lib/time'
 import { useUrlParam } from '../hooks/useUrlParam'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
+import ProjectEditDrawer from '../components/ProjectEditDrawer'
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -47,17 +48,19 @@ const VIEW_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'list', label: 'List' },
 ]
 
-function ProjectInsightCard({ p }: { p: ProjectInsights }) {
+function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string) => void }) {
   const health = deriveHealth(p)
   const totalActive = p.open_count + p.in_progress_count + p.backlog_count
   const total = totalActive + p.done_count
   const donePct = total === 0 ? 0 : Math.round((p.done_count / total) * 100)
 
   return (
-    <Link
-      to={`/workflow?project=${encodeURIComponent(p.project_id)}`}
-      className="group block rounded-xl border p-3.5 transition-all hover:border-indigo-500/60 hover:shadow-lg hover:shadow-indigo-900/10"
+    <button
+      type="button"
+      onClick={() => onEdit(p.project_id)}
+      className="group block w-full text-left rounded-xl border p-3.5 transition-all hover:border-indigo-500/60 hover:shadow-lg hover:shadow-indigo-900/10 focus:outline-none focus:border-indigo-500"
       style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+      title="Click to edit project"
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-2 mb-2">
@@ -127,7 +130,7 @@ function ProjectInsightCard({ p }: { p: ProjectInsights }) {
           </span>
         )}
       </div>
-    </Link>
+    </button>
   )
 }
 
@@ -162,7 +165,7 @@ function Num({ value, tone = 'slate' }: { value: number; tone?: keyof typeof MET
   return <span className={`tabular-nums font-medium ${cls}`}>{value}</span>
 }
 
-function ProjectListRow({ p }: { p: ProjectInsights }) {
+function ProjectListRow({ p, onEdit }: { p: ProjectInsights; onEdit: (id: string) => void }) {
   const health = deriveHealth(p)
   const total = p.open_count + p.in_progress_count + p.backlog_count + p.done_count
   const donePct = total === 0 ? 0 : Math.round((p.done_count / total) * 100)
@@ -171,11 +174,13 @@ function ProjectListRow({ p }: { p: ProjectInsights }) {
     <tr
       className="border-b border-slate-800/60 hover:bg-slate-900/40 transition-colors"
     >
-      {/* Name + id */}
+      {/* Name + id (click to edit) */}
       <td className="px-3 py-2">
-        <Link
-          to={`/workflow?project=${encodeURIComponent(p.project_id)}`}
-          className="group block"
+        <button
+          type="button"
+          onClick={() => onEdit(p.project_id)}
+          className="group block text-left focus:outline-none"
+          title="Click to edit project"
         >
           <div className="text-sm font-medium text-slate-100 group-hover:text-white truncate max-w-[240px]">
             {p.project_name}
@@ -183,7 +188,7 @@ function ProjectListRow({ p }: { p: ProjectInsights }) {
           <div className="text-[10px] font-mono text-slate-500 truncate max-w-[240px]">
             {p.project_id}
           </div>
-        </Link>
+        </button>
       </td>
 
       {/* Context */}
@@ -269,7 +274,7 @@ function ProjectListRow({ p }: { p: ProjectInsights }) {
   )
 }
 
-function ProjectListTable({ items }: { items: ProjectInsights[] }) {
+function ProjectListTable({ items, onEdit }: { items: ProjectInsights[]; onEdit: (id: string) => void }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800" style={{ background: 'var(--wf-bg-card)' }}>
       <table className="w-full text-xs">
@@ -294,7 +299,7 @@ function ProjectListTable({ items }: { items: ProjectInsights[] }) {
           </tr>
         </thead>
         <tbody>
-          {items.map((p) => <ProjectListRow key={p.project_id} p={p} />)}
+          {items.map((p) => <ProjectListRow key={p.project_id} p={p} onEdit={onEdit} />)}
         </tbody>
       </table>
     </div>
@@ -309,6 +314,7 @@ export default function ProjectsPage() {
   )
   const [contextFilter, setContextFilter] = useUrlParam('context')
   const [view, setView] = useUrlParam('view', 'grid')
+  const [editingId, setEditingId] = useState<string | null>(null)
 
   const filtered = useMemo(() => {
     if (!data) return []
@@ -410,11 +416,11 @@ export default function ProjectsPage() {
               <span className="text-[10px] text-slate-500">{items.length}</span>
             </div>
             {view === 'list' ? (
-              <ProjectListTable items={items} />
+              <ProjectListTable items={items} onEdit={setEditingId} />
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
                 {items.map((p) => (
-                  <ProjectInsightCard key={p.project_id} p={p} />
+                  <ProjectInsightCard key={p.project_id} p={p} onEdit={setEditingId} />
                 ))}
               </div>
             )}
@@ -425,6 +431,8 @@ export default function ProjectsPage() {
       {filtered.length === 0 && (
         <div className="text-xs text-slate-500 text-center py-8">No projects match this filter.</div>
       )}
+
+      <ProjectEditDrawer projectId={editingId} onClose={() => setEditingId(null)} />
     </div>
   )
 }

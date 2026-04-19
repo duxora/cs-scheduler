@@ -137,6 +137,9 @@ export interface ProjectInsights {
   project_id: string
   project_name: string
   context: Context | null
+  priority: string | null
+  mode: string | null
+  repo_path: string | null
   open_count: number
   in_progress_count: number
   backlog_count: number

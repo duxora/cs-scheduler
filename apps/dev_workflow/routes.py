@@ -229,6 +229,9 @@ async def api_projects_insights():
         SELECT p.id          AS project_id,
                p.name        AS project_name,
                p.context     AS context,
+               p.priority    AS priority,
+               p.mode        AS mode,
+               p.repo_path   AS repo_path,
                p.archived_at AS archived_at,
                SUM(CASE WHEN t.status = 'open'        THEN 1 ELSE 0 END) AS open_count,
                SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress_count,
@@ -275,6 +278,87 @@ async def api_projects_insights():
 
     conn.close()
     return JSONResponse([dict(r) for r in rows])
+
+
+VALID_CONTEXTS = {"work", "family", "personal"}
+VALID_PRIORITIES = {"critical", "high", "medium", "low"}
+VALID_MODES = {"solo", "team"}
+
+
+@router.get("/api/projects/{project_id}", response_class=JSONResponse)
+async def api_get_project(project_id: str):
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"error": "db not found"}, status_code=500)
+    row = conn.execute(
+        "SELECT id, name, repo_path, context, priority, mode, created_at, archived_at "
+        "FROM projects WHERE id = ?",
+        [project_id],
+    ).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse({"error": "project not found"}, status_code=404)
+    return JSONResponse(dict(row))
+
+
+@router.put("/api/projects/{project_id}", response_class=JSONResponse)
+async def api_update_project(project_id: str, request: Request):
+    body = await request.json()
+
+    sets: list[str] = []
+    params: list = []
+
+    if "name" in body:
+        name = (body.get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "name cannot be empty"}, status_code=400)
+        sets.append("name = ?"); params.append(name)
+
+    if "repo_path" in body:
+        rp = body.get("repo_path")
+        rp = rp.strip() if isinstance(rp, str) else rp
+        sets.append("repo_path = ?"); params.append(rp or None)
+
+    if "context" in body:
+        ctx = body.get("context") or None
+        if ctx is not None and ctx not in VALID_CONTEXTS:
+            return JSONResponse({"error": f"invalid context, must be one of {sorted(VALID_CONTEXTS)} or null"}, status_code=400)
+        sets.append("context = ?"); params.append(ctx)
+
+    if "priority" in body:
+        pri = body.get("priority") or None
+        if pri is not None and pri not in VALID_PRIORITIES:
+            return JSONResponse({"error": f"invalid priority, must be one of {sorted(VALID_PRIORITIES)} or null"}, status_code=400)
+        sets.append("priority = ?"); params.append(pri)
+
+    if "mode" in body:
+        mode = body.get("mode") or None
+        if mode is not None and mode not in VALID_MODES:
+            return JSONResponse({"error": f"invalid mode, must be one of {sorted(VALID_MODES)} or null"}, status_code=400)
+        sets.append("mode = ?"); params.append(mode)
+
+    if not sets:
+        return JSONResponse({"error": "no editable fields provided"}, status_code=400)
+
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"error": "db not found"}, status_code=500)
+
+    existing = conn.execute("SELECT id FROM projects WHERE id = ?", [project_id]).fetchone()
+    if not existing:
+        conn.close()
+        return JSONResponse({"error": "project not found"}, status_code=404)
+
+    conn.execute(f"UPDATE projects SET {', '.join(sets)} WHERE id = ?", [*params, project_id])
+    conn.commit()
+
+    row = conn.execute(
+        "SELECT id, name, repo_path, context, priority, mode, created_at, archived_at "
+        "FROM projects WHERE id = ?",
+        [project_id],
+    ).fetchone()
+    conn.close()
+    return JSONResponse(dict(row))
 
 
 @router.get("/api/roadmap", response_class=JSONResponse)
