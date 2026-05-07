@@ -51,7 +51,7 @@ export default function KBApp() {
       </nav>
 
       {/* Sub-route content */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index element={<DashboardPage />} />

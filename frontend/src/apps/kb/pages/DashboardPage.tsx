@@ -1,13 +1,12 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import useSWR from 'swr'
+import { fetcher } from '../../../shared/fetcher'
 import { useKBStats } from '../hooks/useKBStats'
 import { useKBSearch } from '../hooks/useKBSearch'
 import { ingestUrl } from '../lib/api'
 import { KB_DOMAINS, domainBadgeClass, confidenceBadgeClass, formatDate } from '../lib/domain'
 import type { KBEntry, KBDomain } from '../types'
-
-const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
 // --------------------------------------------------------------------------
 // IngestModal
@@ -24,7 +23,7 @@ function IngestModal({ onClose, onSuccess }: IngestModalProps) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
-  async function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault()
     if (!url.trim()) return
     setIsSubmitting(true)
@@ -134,7 +133,7 @@ interface EntryCardProps {
 
 function EntryCard({ entry, showSummary = true }: EntryCardProps) {
   return (
-    <div className="py-3 border-b border-gray-800 last:border-0">
+    <div className="py-3 border-b border-gray-800 last:border-0 hover:bg-gray-800/20 transition-colors duration-150 -mx-4 px-4 rounded">
       <Link
         to={`/kb/entry/${entry.id}`}
         className="text-blue-400 hover:text-blue-300 font-medium hover:underline"
@@ -169,6 +168,17 @@ function EntryCard({ entry, showSummary = true }: EntryCardProps) {
 // DashboardPage
 // --------------------------------------------------------------------------
 
+const DOMAIN_NUMBER_COLORS: Record<string, string> = {
+  'agentic-workflow': 'text-orange-400',
+  'tech-trends':    'text-blue-400',
+  'coding-skills':  'text-emerald-400',
+  'system-design':  'text-purple-400',
+  'leadership':     'text-amber-400',
+  'startup':        'text-pink-400',
+  'agentic-ai':     'text-cyan-400',
+  'vibe-coding':    'text-violet-400',
+}
+
 export default function DashboardPage() {
   const { stats, isLoading: statsLoading, refresh: refreshStats } = useKBStats()
   const { entries: searchResults, isLoading: searchLoading, query, domain, setQuery, setDomain } = useKBSearch()
@@ -189,9 +199,9 @@ export default function DashboardPage() {
     { refreshInterval: 30_000 },
   )
 
-  // Browse by domain
+  // Browse by domain — dedicated endpoint (FTS5 can't handle "match everything").
   const { data: browseResults } = useSWR<KBEntry[]>(
-    browseDomain ? `/kb/api/search?q=.&domain=${browseDomain}` : null,
+    browseDomain ? `/kb/api/browse?domain=${encodeURIComponent(browseDomain)}&limit=20` : null,
     fetcher,
   )
 
@@ -211,7 +221,7 @@ export default function DashboardPage() {
       </div>
 
       {/* Stats grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-4 gap-3 mb-6">
         <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 md:col-span-1">
           <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">Total Entries</div>
           <div className="text-2xl font-bold">
@@ -220,8 +230,8 @@ export default function DashboardPage() {
         </div>
         {KB_DOMAINS.map((d) => (
           <div key={d} className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-            <div className="text-gray-500 text-xs uppercase tracking-wide mb-1 truncate">{d}</div>
-            <div className="text-2xl font-bold text-blue-400">
+            <div className="text-gray-500 text-xs uppercase tracking-wide mb-1">{d}</div>
+            <div className={`text-2xl font-bold ${DOMAIN_NUMBER_COLORS[d] ?? 'text-gray-100'}`}>
               {statsLoading ? '—' : (stats?.by_domain?.[d] ?? 0)}
             </div>
           </div>
@@ -231,14 +241,22 @@ export default function DashboardPage() {
       {/* Search bar */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4 mb-6">
         <div className="flex gap-3">
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search knowledge base..."
-            aria-label="Search knowledge base"
-            className="flex-1 bg-gray-950 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
-          />
+          <div className="relative flex-1">
+            <svg
+              className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500 pointer-events-none"
+              fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+            </svg>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search knowledge base..."
+              aria-label="Search knowledge base"
+              className="w-full bg-gray-950 border border-gray-700 rounded pl-9 pr-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500"
+            />
+          </div>
           <select
             value={domain}
             onChange={(e) => setDomain(e.target.value)}

@@ -56,11 +56,25 @@ except Exception as e:
     print(f"[WARN] Failed to load dev_workflow app: {e}")
     traceback.print_exc()
 
+from apps.stats.routes import router as stats_router
+register_app("Stats", "KB and scheduler analytics", "/stats", "📊")
+app.include_router(stats_router, prefix="/api/stats")
+
 # Redirect /prefix → /prefix/ for all app router prefixes
 for _prefix in ["/workflow", "/scheduler", "/kb", "/telegram-bridge"]:
     app.get(_prefix, include_in_schema=False)(
         lambda _p=_prefix: RedirectResponse(f"{_p}/", status_code=307)
     )
+
+
+# ── SPA routes — serve index.html for React Router paths ────────────────────
+
+_SPA_INDEX = _SPA_DIST / "index.html"
+
+@app.get("/stats", include_in_schema=False)
+@app.get("/stats/{path:path}", include_in_schema=False)
+async def serve_stats_spa(path: str = ""):
+    return FileResponse(str(_SPA_INDEX))
 
 
 # ── SPA catch-all ────────────────────────────────────────────────────────────

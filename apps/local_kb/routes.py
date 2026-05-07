@@ -88,6 +88,21 @@ async def api_search(q: str = Query(""), domain: str = Query("")):
     return [_entry_dict(e) for e in entries]
 
 
+@router.get("/api/browse")
+async def api_browse(
+    domain: str = Query(...),
+    sort_by: str = Query("recent"),
+    limit: int = Query(20),
+):
+    # Browse-by-domain must not route through FTS5 — an empty or punctuation-only
+    # query raises `fts5: syntax error`, which is why the dashboard's Browse tile
+    # was silently empty. Use the dedicated browse_entries path instead.
+    from local_kb.db import browse_entries
+    conn = _get_db()
+    entries = browse_entries(conn, domain=domain, sort_by=sort_by, limit=limit)
+    return [_entry_dict(e) for e in entries]
+
+
 @router.get("/api/trending")
 async def api_trending(days: int = Query(default=7), limit: int = Query(default=5)):
     from local_kb.db import get_trending

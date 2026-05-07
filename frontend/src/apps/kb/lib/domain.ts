@@ -1,6 +1,7 @@
 import type { KBDomain, KBConfidence } from '../types'
 
 export const KB_DOMAINS: KBDomain[] = [
+  'agentic-workflow',
   'tech-trends',
   'coding-skills',
   'system-design',
@@ -12,6 +13,7 @@ export const KB_DOMAINS: KBDomain[] = [
 
 // Color-coded domain badges
 const DOMAIN_COLORS: Record<KBDomain, string> = {
+  'agentic-workflow': 'bg-orange-900/60 text-orange-300 border-orange-700',
   'tech-trends': 'bg-blue-900/60 text-blue-300 border-blue-700',
   'coding-skills': 'bg-emerald-900/60 text-emerald-300 border-emerald-700',
   'system-design': 'bg-purple-900/60 text-purple-300 border-purple-700',

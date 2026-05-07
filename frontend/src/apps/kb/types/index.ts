@@ -1,4 +1,5 @@
 export type KBDomain =
+  | 'agentic-workflow'
   | 'tech-trends'
   | 'coding-skills'
   | 'system-design'

@@ -1,17 +1,17 @@
 import { useState } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
+import { fetcher } from '../../../shared/fetcher'
 import { deleteEntry } from '../lib/api'
 import { domainBadgeClass, confidenceBadgeClass, formatDate } from '../lib/domain'
 import type { KBEntry } from '../types'
-
-const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
 export default function EntryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   const { data: entry, error, isLoading } = useSWR<KBEntry>(
     id ? `/kb/api/entry/${encodeURIComponent(id)}` : null,
@@ -32,6 +32,38 @@ export default function EntryDetailPage() {
       setDeleteError(err instanceof Error ? err.message : 'Delete failed')
       setIsDeleting(false)
     }
+  }
+
+  function buildMarkdown(e: KBEntry): string {
+    const lines: string[] = [`# ${e.title}`, '']
+    lines.push('## Summary', e.summary, '')
+    if (e.key_takeaways && e.key_takeaways.length > 0) {
+      lines.push('## Key Takeaways')
+      e.key_takeaways.forEach((t) => lines.push(`- ${t}`))
+      lines.push('')
+    }
+    if (e.context) {
+      lines.push('## When to Apply', e.context, '')
+    }
+    return lines.join('\n')
+  }
+
+  async function handleCopy() {
+    if (!entry) return
+    await navigator.clipboard.writeText(buildMarkdown(entry))
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  function handleDownload() {
+    if (!entry) return
+    const blob = new Blob([buildMarkdown(entry)], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${entry.id}.md`
+    a.click()
+    URL.revokeObjectURL(url)
   }
 
   if (isLoading) {
@@ -182,6 +214,20 @@ export default function EntryDetailPage() {
             {deleteError && (
               <p className="text-xs text-red-400 mb-2">{deleteError}</p>
             )}
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={handleCopy}
+                className="flex-1 px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-600 rounded transition-colors"
+              >
+                {copied ? 'Copied!' : 'Copy MD'}
+              </button>
+              <button
+                onClick={handleDownload}
+                className="flex-1 px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 border border-gray-600 rounded transition-colors"
+              >
+                Download
+              </button>
+            </div>
             <button
               onClick={handleDelete}
               disabled={isDeleting}

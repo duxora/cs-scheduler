@@ -33,6 +33,14 @@ export const HUB_APPS: HubApp[] = [
     migrated: true,
   },
   {
+    id: 'stats',
+    name: 'Stats',
+    icon: '📊',
+    path: '/stats',
+    description: 'KB and automation analytics',
+    migrated: true,
+  },
+  {
     id: 'telegram',
     name: 'Telegram Bridge',
     icon: '🤖',
