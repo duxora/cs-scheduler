@@ -1,15 +1,31 @@
 import { useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import useSWR from 'swr'
 import type { RoadmapItem } from '../types'
 import { TypeBadge } from '../components/ui/TypeBadge'
 import { PriorityDot, PriorityBadge, ContextBadge } from '../components/ui/Badge'
 import { ProgressBar } from '../components/ui/ProgressBar'
-import { ContextToken, CONTEXT_KEYS, type ContextKey } from '../lib/tokens'
+import {
+  ContextToken,
+  CONTEXT_KEYS,
+  EpicSortFields,
+  type ContextKey,
+  type EpicSortFieldKey,
+} from '../lib/tokens'
 import { formatAgeCoarse } from '../lib/time'
 import { useUrlParam } from '../hooks/useUrlParam'
+import { useSortCriteria, type SortCriteriaConfig } from '../hooks/useSortCriteria'
+import { applyEpicSorts, EPIC_DEFAULT_SORT } from '../lib/sort'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
-import { treePath } from '../lib/urls'
+import SortBuilder from '../components/SortBuilder'
+import { treePath, epicPath } from '../lib/urls'
+
+const EPIC_SORT_CONFIG: SortCriteriaConfig<EpicSortFieldKey> = {
+  fields: EpicSortFields,
+  defaultSort: EPIC_DEFAULT_SORT,
+  storageKey: 'workflow.epicSortCriteria',
+  urlParam: 'esort',
+}
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -40,6 +56,7 @@ interface EpicCardProps {
 }
 
 function EpicCard({ item }: EpicCardProps) {
+  const navigate = useNavigate()
   const progress = item.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
   const childCount = item.children_count ?? 0
   const stale = daysStale(item.updated_at)
@@ -49,11 +66,20 @@ function EpicCard({ item }: EpicCardProps) {
   const nearDone = progress.total > 0 && progress.percent >= 80 && progress.percent < 100
   const context = resolveContext(item)
 
+  // left border color signals health at a glance without reading the chips
+  const borderLeftColor = isStuck
+    ? 'rgb(239 68 68 / 0.55)'   // red-500
+    : nearDone
+    ? 'rgb(52 211 153 / 0.6)'   // emerald-400
+    : progress.in_progress > 0
+    ? 'rgb(251 191 36 / 0.6)'   // amber-400
+    : 'var(--wf-border)'
+
   return (
-    <Link
-      to={treePath(item.id, item.slug)}
-      className="group block rounded-lg border p-3 transition-all hover:border-indigo-500/60"
-      style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+    <div
+      className="group block rounded-lg border border-l-[3px] p-3 transition-all hover:border-indigo-500/60 cursor-pointer"
+      style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)', borderLeftColor }}
+      onClick={() => navigate(epicPath(item.id, item.slug))}
     >
       {/* Row 1: type + id + priority + context */}
       <div className="flex items-center gap-2 mb-2">
@@ -103,13 +129,29 @@ function EpicCard({ item }: EpicCardProps) {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between text-[10px] text-slate-500">
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
         <span className="truncate">{item.project_name}</span>
         <span className="shrink-0">
           {childCount} {childCount === 1 ? 'child' : 'children'} · {age}d old · {formatAgeCoarse(item.updated_at)}
         </span>
       </div>
-    </Link>
+
+      {/* Actions */}
+      <div className="flex items-center gap-1 pt-2 border-t border-slate-800/60" onClick={(e) => e.stopPropagation()}>
+        <Link
+          to={treePath(item.id, item.slug)}
+          className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
+        >
+          Tree
+        </Link>
+        <Link
+          to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
+          className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
+        >
+          Tasks
+        </Link>
+      </div>
+    </div>
   )
 }
 
@@ -210,9 +252,9 @@ function EpicListRow({ item }: { item: RoadmapItem }) {
             Tree
           </Link>
           <Link
-            to={`/workflow?project=${encodeURIComponent(item.project_id)}`}
+            to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
             className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
-            title="Open task board for this project"
+            title="Open tasks for this epic"
           >
             Tasks
           </Link>
@@ -275,17 +317,59 @@ function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }
     return { wip, stuck, notStarted, nearDone, avg, count: items.length }
   }, [items])
 
+  // best to push: near-done → in-flight → least stale
+  const focusTitle = useMemo(() => {
+    if (items.length <= 1) return null
+    const nearDone = items.find(e => {
+      const p = e.progress ?? { total: 0, percent: 0, in_progress: 0, done: 0, open: 0 }
+      return p.percent >= 80 && p.percent < 100
+    })
+    if (nearDone) return nearDone.title
+    const inFlight = items.find(e => {
+      const p = e.progress ?? { total: 0, percent: 0, in_progress: 0, done: 0, open: 0 }
+      return p.in_progress > 0
+    })
+    if (inFlight) return inFlight.title
+    // least stale = most recently touched
+    const sorted = [...items].sort(
+      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+    )
+    return sorted[0]?.title ?? null
+  }, [items])
+
   return (
-    <div className="flex items-center gap-2 text-[10px] text-slate-400 flex-wrap">
-      <span>
+    <div className="flex items-center gap-2 text-[10px] flex-wrap flex-1 min-w-0">
+      <span className="text-slate-400">
         <span className="text-slate-200 font-medium">{stats.count}</span> {label}
       </span>
-      <span className="text-slate-600">·</span>
-      <span>Avg <span className="text-indigo-300 font-medium">{stats.avg}%</span></span>
-      {stats.wip > 0 && <span className="text-amber-300">{stats.wip} WIP</span>}
-      {stats.stuck > 0 && <span className="text-red-300">{stats.stuck} stuck</span>}
-      {stats.notStarted > 0 && <span className="text-amber-300">{stats.notStarted} not started</span>}
-      {stats.nearDone > 0 && <span className="text-emerald-300">{stats.nearDone} near done</span>}
+      <span className="px-1.5 py-px rounded-full bg-slate-800/60 text-indigo-300 border border-slate-700/40">
+        {stats.avg}% avg
+      </span>
+      {stats.stuck > 0 && (
+        <span className="px-1.5 py-px rounded-full bg-red-900/40 text-red-300 border border-red-700/40">
+          {stats.stuck} stuck
+        </span>
+      )}
+      {stats.wip > 0 && (
+        <span className="px-1.5 py-px rounded-full bg-amber-900/40 text-amber-300 border border-amber-700/40">
+          {stats.wip} WIP
+        </span>
+      )}
+      {stats.notStarted > 0 && (
+        <span className="px-1.5 py-px rounded-full bg-slate-800/50 text-slate-400 border border-slate-700/40">
+          {stats.notStarted} not started
+        </span>
+      )}
+      {stats.nearDone > 0 && (
+        <span className="px-1.5 py-px rounded-full bg-emerald-900/40 text-emerald-300 border border-emerald-700/40">
+          {stats.nearDone} near done
+        </span>
+      )}
+      {focusTitle != null && (
+        <span className="ml-auto shrink-0 text-slate-500">
+          push: <span className="text-indigo-300 font-medium">{focusTitle}</span>
+        </span>
+      )}
     </div>
   )
 }
@@ -295,6 +379,7 @@ export default function EpicsPage() {
   const [projectFilter, setProjectFilter] = useUrlParam('project')
   const [typeFilter, setTypeFilter] = useUrlParam('type')
   const [view, setView] = useUrlParam('view', 'grid')
+  const sortController = useSortCriteria(EPIC_SORT_CONFIG)
 
   const { data, isLoading, error } = useSWR<RoadmapItem[]>(
     '/workflow/api/roadmap',
@@ -332,8 +417,12 @@ export default function EpicsPage() {
         buckets.unclassified!.push(e)
       }
     }
+    // Apply user's sort criteria within each context bucket (preserves grouping).
+    for (const key of Object.keys(buckets)) {
+      buckets[key] = applyEpicSorts(buckets[key]!, sortController.criteria)
+    }
     return buckets
-  }, [filtered])
+  }, [filtered, sortController.criteria])
 
   if (isLoading) {
     return <div className="p-4 text-xs text-slate-500">Loading epics…</div>
@@ -350,9 +439,9 @@ export default function EpicsPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 flex flex-col gap-4" style={{ background: 'var(--wf-bg)' }}>
+    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg)' }}>
       {/* Filter bar */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Life area</span>
           <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={setContextFilter} />
@@ -390,6 +479,11 @@ export default function EpicsPage() {
         </div>
       </div>
 
+      {/* Sort builder — reorders within each context bucket */}
+      <div className="rounded-lg border" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+        <SortBuilder controller={sortController} fields={EpicSortFields} />
+      </div>
+
       {/* Grouped epic content */}
       {([...CONTEXT_KEYS, 'unclassified'] as const).map((key) => {
         const items = grouped[key] ?? []
@@ -404,8 +498,8 @@ export default function EpicsPage() {
             : ContextToken.accent[key as ContextKey]
         return (
           <section key={key}>
-            <div className="flex items-center gap-3 mb-2">
-              <h2 className={`text-[11px] font-semibold uppercase tracking-widest ${accent}`}>
+            <div className="flex items-center gap-3 mb-2 lg:mb-3">
+              <h2 className={`text-[11px] lg:text-xs font-semibold uppercase tracking-widest ${accent}`}>
                 {display}
               </h2>
               <BucketSummary items={items} label={items.length === 1 ? 'epic' : 'epics'} />

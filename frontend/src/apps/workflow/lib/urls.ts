@@ -13,6 +13,12 @@ export function treePath(id: number, slug?: string | null): string {
   return `/workflow/tree/${id}`
 }
 
+/** Build a `/workflow/epics/...` path from id + optional slug. */
+export function epicPath(id: number, slug?: string | null): string {
+  if (slug) return `/workflow/epics/${id}-${slug}`
+  return `/workflow/epics/${id}`
+}
+
 /** Extract the numeric id from a `{id}` or `{id}-{slug}` URL segment. */
 export function parseIdFromRef(ref: string | undefined | null): number | null {
   if (!ref) return null
