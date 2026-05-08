@@ -31,6 +31,96 @@ def get_tkt_db() -> Optional[sqlite3.Connection]:
     return conn
 
 
+def _ensure_dismissed_column():
+    conn = get_tkt_db()
+    if not conn:
+        return
+    try:
+        conn.execute("ALTER TABLE pipeline_runs ADD COLUMN dismissed INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+_ensure_dismissed_column()
+
+
+def _parse_simple_frontmatter(raw: str) -> tuple[dict[str, str], str]:
+    lines = raw.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, raw
+
+    end_idx = None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            end_idx = idx
+            break
+
+    if end_idx is None:
+        return {}, raw
+
+    frontmatter: dict[str, str] = {}
+    for line in lines[1:end_idx]:
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        frontmatter[key.strip()] = value.strip().strip('"').strip("'")
+
+    body = "\n".join(lines[end_idx + 1 :])
+    return frontmatter, body
+
+
+def _section_lines(body: str, headers: tuple[str, ...]) -> list[str]:
+    lines = body.splitlines()
+    header_idx = None
+    for idx, line in enumerate(lines):
+        if line.strip() in headers:
+            header_idx = idx
+            break
+    if header_idx is None:
+        return []
+
+    collected: list[str] = []
+    for line in lines[header_idx + 1 :]:
+        if line.strip().startswith("## "):
+            break
+        collected.append(line)
+    return collected
+
+
+def _extract_handoff_note(path: Path, task_id: int) -> Optional[dict]:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    frontmatter, body = _parse_simple_frontmatter(raw)
+    body_sample = body[:2000]
+    task_marker = f"#{task_id}"
+    task_line = frontmatter.get("task", "")
+    if task_marker not in body_sample and task_marker not in task_line:
+        return None
+
+    branch = frontmatter.get("branch", "")
+
+    current_state_lines = [
+        line.strip()
+        for line in _section_lines(body_sample, ("## Current State",))
+        if line.strip()
+    ][:3]
+    decision_lines = _section_lines(body_sample, ("## Decision", "## Decisions"))
+    decision = next((line.strip() for line in decision_lines if line.strip()), "")
+
+    return {
+        "found": True,
+        "branch": branch,
+        "last_state": "\n".join(current_state_lines),
+        "decision": decision,
+    }
+
+
 # ── Hierarchy helpers ────────────────────────────────────────────────────────
 
 def compute_progress(conn: sqlite3.Connection, task_id: int) -> dict:
@@ -208,6 +298,7 @@ async def api_dashboard():
         SELECT p.id as project_id, p.name as project_name, p.context,
                SUM(CASE WHEN t.status = 'open' THEN 1 ELSE 0 END) as open_count,
                SUM(CASE WHEN t.status = 'in_progress' THEN 1 ELSE 0 END) as in_progress_count,
+               SUM(CASE WHEN t.status = 'backlog' THEN 1 ELSE 0 END) as backlog_count,
                SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) as done_count
         FROM projects p
         LEFT JOIN tasks t ON t.project_id = p.id
@@ -733,17 +824,25 @@ def _list_sessions(claim_map: Optional[dict] = None) -> list[dict]:
         else:
             alive, liveness_reason = False, "stale_pid_reuse"
 
+        cwd = data.get("cwd", "")
+        task_title = claim.get("task_title")
+        # Claude Code doesn't populate `name`; derive something human-readable:
+        # active ticket title wins, else the last segment of cwd (e.g. "tools").
+        display_name = task_title or (cwd.rstrip("/").rsplit("/", 1)[-1] if cwd else None)
+
         sessions.append({
             "file": f.name,
             "sessionId": session_id,
-            "cwd": data.get("cwd", ""),
+            "cwd": cwd,
             "pid": pid,
             "alive": alive,
             "startedAt": started_at,
             "age_hours": round(age_s / 3600, 2) if age_s is not None else None,
             "liveness_reason": liveness_reason,
             "name": data.get("name"),
+            "display_name": display_name,
             "task_id": claim.get("task_id"),
+            "task_title": task_title,
             "heartbeat_at": heartbeat_at,
         })
 
@@ -754,17 +853,26 @@ def _list_sessions(claim_map: Optional[dict] = None) -> list[dict]:
 
 @router.get("/api/sessions", response_class=JSONResponse)
 async def api_sessions():
-    # Load claims once; _list_sessions uses them for heartbeat freshness check.
+    # Load claims + task titles together — saves a per-session lookup when
+    # deriving the display_name for claimed sessions.
     try:
         conn = sqlite3.connect(str(TKT_DB_PATH))
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT task_id, session_id, heartbeat_at FROM claims").fetchall()
+        rows = conn.execute(
+            """
+            SELECT c.task_id, c.session_id, c.heartbeat_at, t.title AS task_title
+            FROM claims c
+            LEFT JOIN tasks t ON t.id = c.task_id
+            """
+        ).fetchall()
         conn.close()
         claim_map = {r["session_id"]: dict(r) for r in rows}
     except Exception:
         claim_map = {}
 
-    return JSONResponse(_list_sessions(claim_map))
+    # Surface only alive sessions — dead/stale ones add noise without value.
+    alive = [s for s in _list_sessions(claim_map) if s["alive"]]
+    return JSONResponse(alive)
 
 
 @router.get("/api/pipeline-state", response_class=JSONResponse)
@@ -821,6 +929,7 @@ async def api_pipeline_state():
             "started_at": state.get("started_at", ""),
             "heartbeat_at": heartbeat_at,
             "stale": stale,
+            "dismissed": False,
             "steps": state.get("steps", {}),
         })
 
@@ -843,6 +952,90 @@ async def delete_pipeline_state(session_id: str):
     except Exception:
         pass
 
+    return JSONResponse({"ok": True})
+
+
+@router.get("/api/handoff/{task_id}", response_class=JSONResponse)
+async def api_handoff(task_id: int):
+    handoff_dir = Path.home() / ".claude" / "handoffs"
+    if not handoff_dir.exists():
+        return JSONResponse({"found": False})
+
+    for path_str in globmod.glob(str(handoff_dir / "*.md")):
+        path = Path(path_str)
+        if path.is_dir():
+            continue
+        note = _extract_handoff_note(path, task_id)
+        if note:
+            return JSONResponse(note)
+
+    return JSONResponse({"found": False})
+
+
+@router.get("/api/pipeline-runs/recent", response_class=JSONResponse)
+async def api_pipeline_runs_recent(hours: int = Query(24)):
+    """Return completed pipeline runs from the last N hours, joined with task title/type."""
+    from datetime import timedelta
+
+    conn = get_tkt_db()
+    if not conn:
+        return JSONResponse({"runs": []})
+
+    cutoff = (datetime.utcnow() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    rows = conn.execute(
+        """
+        SELECT
+            pr.task_id, pr.session_id, pr.pipeline, pr.size, pr.domain,
+            pr.started_at, pr.completed_at, pr.steps,
+            pr.tokens_at_claim, pr.tokens_consumed,
+            t.title, t.type
+        FROM pipeline_runs pr
+        LEFT JOIN tasks t ON pr.task_id = t.id
+        WHERE pr.completed_at >= ? AND pr.dismissed = 0
+        ORDER BY pr.completed_at DESC
+        """,
+        (cutoff,),
+    ).fetchall()
+    conn.close()
+
+    runs = []
+    for row in rows:
+        try:
+            steps = jsonlib.loads(row["steps"]) if isinstance(row["steps"], str) else (row["steps"] or {})
+        except Exception:
+            steps = {}
+        runs.append({
+            "task_id": row["task_id"],
+            "title": row["title"] or "",
+            "type": row["type"] or "",
+            "domain": row["domain"],
+            "session_id": row["session_id"],
+            "pipeline": row["pipeline"],
+            "size": row["size"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "heartbeat_at": None,
+            "stale": False,
+            "steps": steps,
+            "tokens_at_claim": row["tokens_at_claim"],
+            "tokens_consumed": row["tokens_consumed"],
+        })
+
+    return JSONResponse({"runs": runs})
+
+
+@router.post("/api/pipeline-runs/{task_id}/dismiss", response_class=JSONResponse)
+async def dismiss_pipeline_run(task_id: int):
+    conn = get_tkt_db()
+    if conn:
+        try:
+            conn.execute("UPDATE pipeline_runs SET dismissed = 1 WHERE task_id = ?", (task_id,))
+            conn.commit()
+        except Exception:
+            pass
+        finally:
+            conn.close()
     return JSONResponse({"ok": True})
 
 
@@ -1816,5 +2009,3 @@ async def workflow_spa_fallback(request: Request, path: str = ""):
     if _SPA_INDEX.exists():
         return _FileResponse(str(_SPA_INDEX))
     return JSONResponse({"error": "SPA not built. Run: cd frontend && pnpm build"}, status_code=503)
-
-

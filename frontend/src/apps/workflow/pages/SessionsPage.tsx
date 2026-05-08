@@ -20,15 +20,6 @@ interface SessionPreview {
 
 // ── sub-components ─────────────────────────────────────────────────────────
 
-function AliveIndicator({ alive }: { alive: boolean }) {
-  return (
-    <span
-      className={`inline-block w-2 h-2 rounded-full shrink-0 ${alive ? 'bg-emerald-500' : 'bg-gray-600'}`}
-      aria-label={alive ? 'alive' : 'dead'}
-    />
-  )
-}
-
 interface PreviewPanelProps {
   sessionId: string
 }
@@ -98,13 +89,11 @@ interface SessionRowProps {
 function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
   const shortId = session.sessionId.slice(0, 8)
   const cwd = session.cwd
+  const label = session.display_name ?? session.name ?? shortId
+  const fromTask = session.task_title != null && session.task_title === session.display_name
 
   return (
-    <div
-      className={`bg-gray-800/50 border rounded-lg overflow-hidden transition-colors ${
-        session.alive ? 'border-gray-700 hover:border-gray-600' : 'border-gray-800 opacity-70'
-      }`}
-    >
+    <div className="bg-gray-800/50 border border-gray-700 hover:border-gray-600 rounded-lg overflow-hidden transition-colors">
       {/* Main row */}
       <button
         className="w-full text-left px-4 py-3 flex flex-col gap-1"
@@ -112,26 +101,26 @@ function SessionRow({ session, expanded, onToggle }: SessionRowProps) {
         aria-expanded={expanded}
       >
         <div className="flex items-center gap-2">
-          <AliveIndicator alive={session.alive} />
-          <span className="text-xs font-mono text-gray-300">{shortId}...</span>
-          <span className="text-[10px] text-gray-500">PID: {session.pid}</span>
+          <span
+            className="inline-block w-2 h-2 rounded-full shrink-0 bg-emerald-500"
+            aria-label="alive"
+          />
+          <span
+            className={`text-sm font-medium truncate ${fromTask ? 'text-blue-300' : 'text-gray-200'}`}
+            title={fromTask ? `Task #${session.task_id}: ${label}` : label}
+          >
+            {label}
+          </span>
           {session.task_id != null && (
-            <span className="text-[10px] text-blue-400 bg-blue-950 px-1.5 py-0.5 rounded border border-blue-900">
+            <span className="text-[10px] text-blue-400 bg-blue-950 px-1.5 py-0.5 rounded border border-blue-900 shrink-0">
               Task #{session.task_id}
             </span>
           )}
-          {session.name && (
-            <span className="text-[10px] text-gray-400 truncate">{session.name}</span>
-          )}
-          <span
-            className={`ml-auto text-[10px] px-1.5 py-0.5 rounded ${
-              session.alive
-                ? 'text-emerald-400 bg-emerald-950/50 border border-emerald-900'
-                : 'text-gray-500 bg-gray-900 border border-gray-800'
-            }`}
-          >
-            {session.alive ? 'alive' : 'dead'}
-          </span>
+        </div>
+
+        <div className="flex items-center gap-2 ml-4 text-[10px] text-gray-500">
+          <span className="font-mono">{shortId}...</span>
+          <span>PID: {session.pid}</span>
         </div>
 
         <div className="text-[10px] text-gray-600 font-mono truncate ml-4" title={cwd}>
@@ -158,15 +147,14 @@ export default function SessionsPage() {
   const { sessions, error, isLoading } = useSessions()
   const [expandedId, setExpandedId] = useUrlParam('session')
 
-  // Sort: alive first, then by startedAt descending
-  const sorted = useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      if (a.alive !== b.alive) return a.alive ? -1 : 1
-      return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
-    })
-  }, [sessions])
-
-  const aliveCount = sessions.filter((s) => s.alive).length
+  // Newest first — the backend only returns alive sessions, so no alive/dead split.
+  const sorted = useMemo(
+    () =>
+      [...sessions].sort(
+        (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+      ),
+    [sessions],
+  )
 
   const handleToggle = (sessionId: string) => {
     setExpandedId(expandedId === sessionId ? '' : sessionId)
@@ -178,11 +166,10 @@ export default function SessionsPage() {
       <div className="flex items-center gap-3 px-4 py-2 border-b border-gray-800 shrink-0">
         <span className="text-xs font-medium text-gray-300">Sessions</span>
         <span className="text-[10px] text-emerald-400 bg-emerald-950/50 px-1.5 py-0.5 rounded border border-emerald-900">
-          {aliveCount} alive
+          {sorted.length} alive
         </span>
         <span className="text-[10px] text-gray-600 ml-auto">
           {isLoading && 'Loading...'}
-          {!isLoading && `${sorted.length} total`}
         </span>
         {error && (
           <span className="text-[10px] text-red-400 bg-red-950 px-1.5 py-0.5 rounded border border-red-800">
@@ -201,7 +188,7 @@ export default function SessionsPage() {
 
         {!isLoading && sorted.length === 0 && !error && (
           <div className="flex items-center justify-center h-24">
-            <span className="text-xs text-gray-600">No sessions found</span>
+            <span className="text-xs text-gray-600">No alive sessions</span>
           </div>
         )}
 

@@ -96,8 +96,13 @@ export default function TaskRow({ task, selected, onSelect, onOpenDetail, onDele
             <span className="truncate max-w-[140px]">{task.project_name ?? task.project_id}</span>
           </span>
           {task.domain && (
-            <span className="text-[12px] text-slate-300 font-medium hidden sm:inline">
+            <span className="text-[11px] text-slate-400 font-medium hidden sm:inline truncate max-w-[100px] lg:max-w-[160px]">
               {task.domain}
+            </span>
+          )}
+          {task.phase && (
+            <span className="text-[10px] text-slate-500 hidden lg:inline bg-slate-800/60 px-1.5 py-px rounded border border-slate-700/40">
+              {task.phase}
             </span>
           )}
           {task.pr_number != null && (

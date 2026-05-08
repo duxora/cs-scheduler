@@ -83,7 +83,7 @@ export function TreeRow({
       </button>
 
       {node.progress && node.progress.total > 0 && (
-        <div className="w-28 shrink-0 hidden md:block">
+        <div className="w-28 lg:w-36 shrink-0 hidden md:block">
           <ProgressBar
             done={node.progress.done}
             total={node.progress.total}
@@ -96,7 +96,7 @@ export function TreeRow({
 
       <Link
         to={treePath(node.id, node.slug)}
-        className="text-[10px] text-slate-500 hover:text-slate-200 transition-colors shrink-0 hidden sm:inline"
+        className="text-[10px] text-slate-500 hover:text-slate-200 transition-colors shrink-0 hidden sm:inline lg:text-[11px]"
         onClick={(e) => e.stopPropagation()}
         title="Open tree"
       >

@@ -3,11 +3,28 @@ import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import type { ProjectInsights } from '../types'
 import { ContextBadge, PriorityBadge, PriorityDot } from '../components/ui/Badge'
-import { ContextToken, CONTEXT_KEYS, Priority, type ContextKey } from '../lib/tokens'
+import {
+  ContextToken,
+  CONTEXT_KEYS,
+  Priority,
+  ProjectSortFields,
+  type ContextKey,
+  type ProjectSortFieldKey,
+} from '../lib/tokens'
 import { formatAgeCoarse } from '../lib/time'
 import { useUrlParam } from '../hooks/useUrlParam'
+import { useSortCriteria, type SortCriteriaConfig } from '../hooks/useSortCriteria'
+import { applyProjectSorts, PROJECT_DEFAULT_SORT } from '../lib/sort'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
+import SortBuilder from '../components/SortBuilder'
 import ProjectEditDrawer from '../components/ProjectEditDrawer'
+
+const PROJECT_SORT_CONFIG: SortCriteriaConfig<ProjectSortFieldKey> = {
+  fields: ProjectSortFields,
+  defaultSort: PROJECT_DEFAULT_SORT,
+  storageKey: 'workflow.projectSortCriteria',
+  urlParam: 'psort',
+}
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
@@ -67,8 +84,14 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
       {/* Header */}
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-slate-100 truncate group-hover:text-white">
-            {p.project_name}
+          <h3 className="text-sm font-semibold text-slate-100 truncate">
+            <Link
+              to={`/workflow?project=${encodeURIComponent(p.project_id)}`}
+              className="hover:text-blue-300 transition-colors"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {p.project_name}
+            </Link>
           </h3>
           <p className="text-[10px] font-mono text-slate-500 truncate">{p.project_id}</p>
         </div>
@@ -121,7 +144,7 @@ function ProjectInsightCard({ p, onEdit }: { p: ProjectInsights; onEdit: (id: st
           className="flex-1 text-center text-[10px] px-1.5 py-1 rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
           title="Open task board for this project"
         >
-          Tasks ({totalActive + p.done_count})
+          Tasks ({totalActive})
         </Link>
         <Link
           to={`/workflow/epics?project=${encodeURIComponent(p.project_id)}`}
@@ -321,6 +344,7 @@ export default function ProjectsPage() {
   const [contextFilter, setContextFilter] = useUrlParam('context')
   const [view, setView] = useUrlParam('view', 'grid')
   const [editingId, setEditingId] = useState<string | null>(null)
+  const sortController = useSortCriteria(PROJECT_SORT_CONFIG)
 
   const filtered = useMemo(() => {
     if (!data) return []
@@ -339,8 +363,12 @@ export default function ProjectsPage() {
         buckets.unclassified!.push(p)
       }
     }
+    // Apply user's sort criteria within each context bucket (preserves grouping).
+    for (const key of Object.keys(buckets)) {
+      buckets[key] = applyProjectSorts(buckets[key]!, sortController.criteria)
+    }
     return buckets
-  }, [filtered])
+  }, [filtered, sortController.criteria])
 
   const totals = useMemo(() => {
     const base = {
@@ -370,7 +398,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 flex flex-col gap-4" style={{ background: 'var(--wf-bg)' }}>
+    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg)' }}>
       {/* Hero row — portfolio-level signals */}
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
         <Metric label="Projects" value={totals.projects} tone="slate" />
@@ -382,7 +410,7 @@ export default function ProjectsPage() {
       </section>
 
       {/* Filter + view toggle */}
-      <div className="flex items-center gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Life area</span>
           <SegmentedControl
@@ -401,6 +429,11 @@ export default function ProjectsPage() {
         </div>
       </div>
 
+      {/* Sort builder — reorders within each context bucket */}
+      <div className="rounded-lg border" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+        <SortBuilder controller={sortController} fields={ProjectSortFields} />
+      </div>
+
       {/* Grouped content */}
       {([...CONTEXT_KEYS, 'unclassified'] as const).map((key) => {
         const items = grouped[key] ?? []
@@ -415,8 +448,8 @@ export default function ProjectsPage() {
             : ContextToken.accent[key as ContextKey]
         return (
           <section key={key}>
-            <div className="flex items-center gap-2 mb-2">
-              <h2 className={`text-[11px] font-semibold uppercase tracking-widest ${accent}`}>
+            <div className="flex items-center gap-2 mb-2 lg:mb-3">
+              <h2 className={`text-[11px] lg:text-xs font-semibold uppercase tracking-widest ${accent}`}>
                 {display}
               </h2>
               <span className="text-[10px] text-slate-500">{items.length}</span>

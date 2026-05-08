@@ -33,37 +33,36 @@ function formatDue(iso: string | null | undefined): string | null {
 
 export function InitiativeCard({ item }: InitiativeCardProps) {
   const progress = item.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
-  const childCount = item.children_count ?? 0
   const due = formatDue(item.due_date)
 
   return (
     <Link
       to={treePath(item.id, item.slug)}
-      className="group block rounded-lg border p-3 transition-all hover:border-indigo-500/50"
+      className="group shrink-0 block rounded-lg border p-2 transition-all hover:border-indigo-500/50"
       style={{
         background: 'var(--wf-bg-card)',
         borderColor: 'var(--wf-border)',
+        minWidth: '190px',
+        maxWidth: '220px',
       }}
     >
       {/* Row 1: type + id + priority dot */}
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-1.5 mb-1.5">
         <TypeBadge type={item.type} />
         <span className="text-[10px] font-mono text-slate-500">#{item.id}</span>
         <PriorityDot priority={item.priority} />
         {due && (
-          <span className="ml-auto text-[10px] text-slate-400">
-            Due {due}
-          </span>
+          <span className="ml-auto text-[10px] text-slate-400 shrink-0">Due {due}</span>
         )}
       </div>
 
       {/* Row 2: title */}
-      <p className="text-sm font-semibold text-slate-100 leading-snug line-clamp-2 mb-2 group-hover:text-white transition-colors">
+      <p className="text-xs font-semibold text-slate-100 leading-snug line-clamp-1 mb-1.5 group-hover:text-white transition-colors">
         {item.title}
       </p>
 
-      {/* Row 3: progress bar */}
-      <div className="mb-2">
+      {/* Row 3: progress bar + meta inline */}
+      <div className="mb-1">
         <ProgressBar
           done={progress.done}
           total={progress.total}
@@ -73,25 +72,15 @@ export function InitiativeCard({ item }: InitiativeCardProps) {
         />
       </div>
 
-      {/* Row 4: chips (child counts + project) */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        {childCount > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-300 border border-slate-700/50">
-            {childCount} {childCount === 1 ? 'child' : 'children'}
-          </span>
-        )}
-        {progress.in_progress > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-amber-900/40 text-amber-300 border border-amber-700/40">
-            {progress.in_progress} in flight
-          </span>
-        )}
+      {/* Row 4: project + open count */}
+      <div className="flex items-center gap-1.5 mt-1">
         {progress.open > 0 && (
           <span className="text-[10px] px-1.5 py-px rounded bg-blue-900/40 text-blue-300 border border-blue-700/40">
             {progress.open} open
           </span>
         )}
         {item.project_name && (
-          <span className="ml-auto text-[10px] text-slate-500 truncate max-w-[120px]">
+          <span className="ml-auto text-[10px] text-slate-500 truncate">
             {item.project_name}
           </span>
         )}

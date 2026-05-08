@@ -205,11 +205,10 @@ export type PhaseKey = (typeof Phases)[number]['key']
 // means: (1) extend the SortFieldKey union, (2) add it here, (3) handle the
 // extraction in lib/sort.ts. Components read display strings from this map.
 
-export type SortFieldKey = 'id' | 'created_at' | 'updated_at' | 'status' | 'title' | 'priority'
 export type SortDirection = 'asc' | 'desc'
 
-export interface SortFieldDef {
-  key: SortFieldKey
+export interface SortFieldDef<K extends string = string> {
+  key: K
   /** Short label used inside pills */
   label: string
   /** Longer label used in the "+ Add sort" menu */
@@ -218,7 +217,19 @@ export interface SortFieldDef {
   defaultDir: SortDirection
 }
 
-export const SortFields: readonly SortFieldDef[] = [
+function toFieldMap<K extends string>(
+  fields: readonly SortFieldDef<K>[],
+): Record<K, SortFieldDef<K>> {
+  return fields.reduce(
+    (acc, f) => { acc[f.key] = f; return acc },
+    {} as Record<K, SortFieldDef<K>>,
+  )
+}
+
+// Task sort fields
+export type SortFieldKey = 'id' | 'created_at' | 'updated_at' | 'status' | 'title' | 'priority'
+
+export const SortFields: readonly SortFieldDef<SortFieldKey>[] = [
   { key: 'status',     label: 'Status',   menuLabel: 'Status (workflow order)', defaultDir: 'asc'  },
   { key: 'priority',   label: 'Priority', menuLabel: 'Priority',                defaultDir: 'asc'  },
   { key: 'updated_at', label: 'Updated',  menuLabel: 'Last updated',            defaultDir: 'desc' },
@@ -227,10 +238,40 @@ export const SortFields: readonly SortFieldDef[] = [
   { key: 'title',      label: 'Name',     menuLabel: 'Name (A → Z)',            defaultDir: 'asc'  },
 ] as const
 
-export const SortFieldMap: Record<SortFieldKey, SortFieldDef> = SortFields.reduce(
-  (acc, f) => { acc[f.key] = f; return acc },
-  {} as Record<SortFieldKey, SortFieldDef>,
-)
+export const SortFieldMap: Record<SortFieldKey, SortFieldDef<SortFieldKey>> = toFieldMap(SortFields)
+
+// Project sort fields
+export type ProjectSortFieldKey = 'priority' | 'name' | 'last_activity' | 'wip' | 'open' | 'overdue' | 'done_14d'
+
+export const ProjectSortFields: readonly SortFieldDef<ProjectSortFieldKey>[] = [
+  { key: 'priority',      label: 'Priority', menuLabel: 'Priority',            defaultDir: 'asc'  },
+  { key: 'name',          label: 'Name',     menuLabel: 'Name (A → Z)',        defaultDir: 'asc'  },
+  { key: 'last_activity', label: 'Active',   menuLabel: 'Last activity',       defaultDir: 'desc' },
+  { key: 'wip',           label: 'WIP',      menuLabel: 'In-progress count',   defaultDir: 'desc' },
+  { key: 'open',          label: 'Open',     menuLabel: 'Open count',          defaultDir: 'desc' },
+  { key: 'overdue',       label: 'Overdue',  menuLabel: 'Overdue count',       defaultDir: 'desc' },
+  { key: 'done_14d',      label: '14d ✓',    menuLabel: 'Shipped last 14 days', defaultDir: 'desc' },
+] as const
+
+export const ProjectSortFieldMap: Record<ProjectSortFieldKey, SortFieldDef<ProjectSortFieldKey>> =
+  toFieldMap(ProjectSortFields)
+
+// Epic sort fields
+export type EpicSortFieldKey = 'priority' | 'title' | 'status' | 'updated_at' | 'created_at' | 'progress' | 'wip' | 'open'
+
+export const EpicSortFields: readonly SortFieldDef<EpicSortFieldKey>[] = [
+  { key: 'priority',   label: 'Priority', menuLabel: 'Priority',         defaultDir: 'asc'  },
+  { key: 'title',      label: 'Name',     menuLabel: 'Name (A → Z)',     defaultDir: 'asc'  },
+  { key: 'status',     label: 'Status',   menuLabel: 'Status',           defaultDir: 'asc'  },
+  { key: 'updated_at', label: 'Updated',  menuLabel: 'Last updated',     defaultDir: 'desc' },
+  { key: 'created_at', label: 'Created',  menuLabel: 'Created date',     defaultDir: 'desc' },
+  { key: 'progress',   label: 'Progress', menuLabel: 'Completion %',     defaultDir: 'desc' },
+  { key: 'wip',        label: 'WIP',      menuLabel: 'In-progress leaves', defaultDir: 'desc' },
+  { key: 'open',       label: 'Open',     menuLabel: 'Open leaves',      defaultDir: 'desc' },
+] as const
+
+export const EpicSortFieldMap: Record<EpicSortFieldKey, SortFieldDef<EpicSortFieldKey>> =
+  toFieldMap(EpicSortFields)
 
 // ── Context (life area) ────────────────────────────────────────────────────
 //

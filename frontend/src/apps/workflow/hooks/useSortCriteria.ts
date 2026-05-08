@@ -1,111 +1,138 @@
 /**
  * useSortCriteria — manages multi-criteria sort state with URL persistence.
  *
- * Behavior:
- *  - First mount: read from `?sort=` query param. If absent, fall back to
- *    localStorage. If neither, use the default.
- *  - On every change: write to URL (replaceState — no history bloat) AND
- *    localStorage so a fresh tab without query params still feels familiar.
- *  - Pure state container — components dispatch via the returned helpers.
- *
- * Why hand-rolled instead of a router? The workflow app already mounts inside
- * a Jinja-served HTML shell with a single SPA route. Adding a router for one
- * query param is overkill — `URLSearchParams` + `history.replaceState` is
- * 12 lines and zero deps.
+ * Generic over field-key type `F` so it can drive task, project, and epic
+ * list sort independently (each with its own field set, storage key, and
+ * URL param).
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import {
-  DEFAULT_SORT,
   parseSort,
   serializeSort,
   type SortCriterion,
 } from '../lib/sort'
-import { SortFieldMap, type SortDirection, type SortFieldKey } from '../lib/tokens'
+import type { SortDirection, SortFieldDef } from '../lib/tokens'
 
-const STORAGE_KEY = 'workflow.sortCriteria'
-const URL_PARAM = 'sort'
+export interface SortCriteriaConfig<F extends string> {
+  /** All valid fields for this entity. Used for parsing + cycleHeader defaults. */
+  fields: readonly SortFieldDef<F>[]
+  /** Default sort applied when user has not configured anything. */
+  defaultSort: readonly SortCriterion<F>[]
+  /** Per-entity storage key for localStorage. */
+  storageKey: string
+  /** Per-entity URL query parameter name. */
+  urlParam: string
+}
 
-function readInitial(): SortCriterion[] {
-  if (typeof window === 'undefined') return DEFAULT_SORT.slice()
+function readInitial<F extends string>(config: SortCriteriaConfig<F>): SortCriterion<F>[] {
+  if (typeof window === 'undefined') return config.defaultSort.slice()
 
-  const fromUrl = parseSort(new URLSearchParams(window.location.search).get(URL_PARAM))
+  const validSet = new Set<F>(config.fields.map((f) => f.key))
+  const fromUrl = parseSort<F>(
+    new URLSearchParams(window.location.search).get(config.urlParam),
+    validSet,
+  )
   if (fromUrl.length > 0) return fromUrl
 
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY)
-    const parsed = parseSort(stored)
+    const stored = window.localStorage.getItem(config.storageKey)
+    const parsed = parseSort<F>(stored, validSet)
     if (parsed.length > 0) return parsed
   } catch {
     // localStorage may throw in private browsing — ignore and fall through.
   }
 
-  return DEFAULT_SORT.slice()
+  return config.defaultSort.slice()
 }
 
-function writeBack(criteria: readonly SortCriterion[]): void {
+function writeBack<F extends string>(
+  criteria: readonly SortCriterion<F>[],
+  config: SortCriteriaConfig<F>,
+): void {
   if (typeof window === 'undefined') return
 
   const serialized = serializeSort(criteria)
   const url = new URL(window.location.href)
   if (serialized) {
-    url.searchParams.set(URL_PARAM, serialized)
+    url.searchParams.set(config.urlParam, serialized)
   } else {
-    url.searchParams.delete(URL_PARAM)
+    url.searchParams.delete(config.urlParam)
   }
   window.history.replaceState(null, '', url.toString())
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, serialized)
+    window.localStorage.setItem(config.storageKey, serialized)
   } catch {
     // ignore
   }
 }
 
-export interface UseSortCriteriaReturn {
-  criteria: SortCriterion[]
+export interface UseSortCriteriaReturn<F extends string> {
+  criteria: SortCriterion<F>[]
   /** Append a field, or move it to the end if already present. */
-  add: (field: SortFieldKey, dir?: SortDirection) => void
+  add: (field: F, dir?: SortDirection) => void
   /** Remove a field by key. No-op if absent. */
-  remove: (field: SortFieldKey) => void
+  remove: (field: F) => void
   /** Flip the direction of a single criterion. */
-  toggleDir: (field: SortFieldKey) => void
+  toggleDir: (field: F) => void
   /** Reorder via dragging — moves `field` to the position of `targetField`. */
-  reorder: (field: SortFieldKey, targetField: SortFieldKey) => void
+  reorder: (field: F, targetField: F) => void
   /**
    * Header-click cycle: none → asc → desc → removed.
    * If `append` is true, mutates in-place; otherwise replaces the whole list.
    */
-  cycleHeader: (field: SortFieldKey, append: boolean) => void
+  cycleHeader: (field: F, append: boolean) => void
   /** Reset to default sort. */
   reset: () => void
+  /** True if current criteria differ from the configured default. */
+  isModified: boolean
 }
 
-export function useSortCriteria(): UseSortCriteriaReturn {
-  const [criteria, setCriteria] = useState<SortCriterion[]>(readInitial)
+function criteriaEqual<F extends string>(
+  a: readonly SortCriterion<F>[],
+  b: readonly SortCriterion<F>[],
+): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i]!.field !== b[i]!.field) return false
+    if (a[i]!.dir !== b[i]!.dir) return false
+  }
+  return true
+}
+
+export function useSortCriteria<F extends string>(
+  config: SortCriteriaConfig<F>,
+): UseSortCriteriaReturn<F> {
+  const [criteria, setCriteria] = useState<SortCriterion<F>[]>(() => readInitial(config))
 
   // Persist to URL + localStorage on every change.
-  useEffect(() => { writeBack(criteria) }, [criteria])
+  useEffect(() => { writeBack(criteria, config) }, [criteria, config])
 
-  const add = useCallback((field: SortFieldKey, dir?: SortDirection) => {
+  const fieldMap = config.fields.reduce(
+    (acc, f) => { acc[f.key] = f; return acc },
+    {} as Record<F, SortFieldDef<F>>,
+  )
+
+  const add = useCallback((field: F, dir?: SortDirection) => {
     setCriteria((prev) => {
       const next = prev.filter((c) => c.field !== field)
-      next.push({ field, dir: dir ?? SortFieldMap[field].defaultDir })
+      next.push({ field, dir: dir ?? fieldMap[field]!.defaultDir })
       return next
     })
-  }, [])
+  }, [fieldMap])
 
-  const remove = useCallback((field: SortFieldKey) => {
+  const remove = useCallback((field: F) => {
     setCriteria((prev) => prev.filter((c) => c.field !== field))
   }, [])
 
-  const toggleDir = useCallback((field: SortFieldKey) => {
+  const toggleDir = useCallback((field: F) => {
     setCriteria((prev) =>
       prev.map((c) => (c.field === field ? { ...c, dir: c.dir === 'asc' ? 'desc' : 'asc' } : c)),
     )
   }, [])
 
-  const reorder = useCallback((field: SortFieldKey, targetField: SortFieldKey) => {
+  const reorder = useCallback((field: F, targetField: F) => {
     if (field === targetField) return
     setCriteria((prev) => {
       const fromIdx = prev.findIndex((c) => c.field === field)
@@ -119,23 +146,24 @@ export function useSortCriteria(): UseSortCriteriaReturn {
     })
   }, [])
 
-  const cycleHeader = useCallback((field: SortFieldKey, append: boolean) => {
+  const cycleHeader = useCallback((field: F, append: boolean) => {
     setCriteria((prev) => {
       const existing = prev.find((c) => c.field === field)
       const base = append ? prev.filter((c) => c.field !== field) : []
 
       if (!existing) {
-        return [...base, { field, dir: SortFieldMap[field].defaultDir }]
+        return [...base, { field, dir: fieldMap[field]!.defaultDir }]
       }
       if (existing.dir === 'asc') {
         return [...base, { field, dir: 'desc' }]
       }
-      // Was desc → cycle removes it.
       return base
     })
-  }, [])
+  }, [fieldMap])
 
-  const reset = useCallback(() => setCriteria(DEFAULT_SORT.slice()), [])
+  const reset = useCallback(() => setCriteria(config.defaultSort.slice()), [config.defaultSort])
 
-  return { criteria, add, remove, toggleDir, reorder, cycleHeader, reset }
+  const isModified = !criteriaEqual(criteria, config.defaultSort)
+
+  return { criteria, add, remove, toggleDir, reorder, cycleHeader, reset, isModified }
 }

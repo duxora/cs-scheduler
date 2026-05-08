@@ -1,44 +1,34 @@
 /**
  * SortPill — single sort criterion as an interactive pill.
  *
- * Anatomy (left → right):
- *   ┌──────────────────────────────────────────────┐
- *   │ ⠿ [position]  Field ↑  ✕                     │
- *   └──────────────────────────────────────────────┘
- *
- *  - drag handle  → reorder pills (changes precedence)
- *  - position #   → numeric badge showing sort precedence (1, 2, 3…)
- *  - field label  → clickable to flip direction
- *  - direction    → ↑ asc / ↓ desc, also clickable
- *  - ✕ button     → remove this criterion
- *
- * The pill is a single token-aware atom. No state, no API calls — pure
- * presentation + event delegation. All visual semantics live in tokens.ts.
+ * Generic over field-key type `F` so it can drive task, project, and epic
+ * sort toolbars from the same atom.
  */
 
 import { ArrowDownIcon, ArrowUpIcon, CloseIcon, GripVerticalIcon } from './icons'
-import type { SortDirection, SortFieldKey } from '../../lib/tokens'
-import { SortFieldMap } from '../../lib/tokens'
+import type { SortDirection, SortFieldDef } from '../../lib/tokens'
 
-interface SortPillProps {
-  field: SortFieldKey
+interface SortPillProps<F extends string> {
+  field: F
   dir: SortDirection
   position: number
   total: number
+  fieldMap: Record<F, SortFieldDef<F>>
   isDragging?: boolean
   isDropTarget?: boolean
-  onToggleDir: (field: SortFieldKey) => void
-  onRemove: (field: SortFieldKey) => void
-  onDragStart: (field: SortFieldKey) => void
-  onDragOver: (field: SortFieldKey) => void
+  onToggleDir: (field: F) => void
+  onRemove: (field: F) => void
+  onDragStart: (field: F) => void
+  onDragOver: (field: F) => void
   onDragEnd: () => void
 }
 
-export function SortPill({
+export function SortPill<F extends string>({
   field,
   dir,
   position,
   total,
+  fieldMap,
   isDragging,
   isDropTarget,
   onToggleDir,
@@ -46,17 +36,14 @@ export function SortPill({
   onDragStart,
   onDragOver,
   onDragEnd,
-}: SortPillProps) {
-  const def = SortFieldMap[field]
+}: SortPillProps<F>) {
+  const def = fieldMap[field]!
   const isPrimary = position === 1
   const dirLabel = dir === 'asc' ? 'ascending' : 'descending'
   const dirArrow = dir === 'asc'
     ? <ArrowUpIcon size={9} className="text-slate-300" />
     : <ArrowDownIcon size={9} className="text-slate-300" />
 
-  // Primary pill gets a slightly stronger border tone — quick visual scan
-  // signal that this field dominates the sort. All colors live in this file
-  // because they apply ONLY to the SortPill atom (not domain semantics).
   const baseClasses = isPrimary
     ? 'border-blue-700/60 bg-blue-950/40 text-blue-100'
     : 'border-slate-700/60 bg-slate-800/80 text-slate-200'
@@ -74,7 +61,6 @@ export function SortPill({
       draggable
       onDragStart={(e) => {
         e.dataTransfer.effectAllowed = 'move'
-        // Required for Firefox to actually start drag.
         e.dataTransfer.setData('text/plain', field)
         onDragStart(field)
       }}
@@ -91,7 +77,6 @@ export function SortPill({
         ${baseClasses} ${dropClasses} ${draggingClasses}
       `}
     >
-      {/* Drag handle */}
       <span
         className="cursor-grab text-slate-500 hover:text-slate-200 active:cursor-grabbing px-0.5"
         aria-hidden="true"
@@ -100,7 +85,6 @@ export function SortPill({
         <GripVerticalIcon size={11} />
       </span>
 
-      {/* Precedence badge */}
       <span
         className={`
           inline-flex items-center justify-center min-w-[14px] h-[14px] px-1
@@ -112,7 +96,6 @@ export function SortPill({
         {position}
       </span>
 
-      {/* Field label + direction (entire region toggles direction) */}
       <button
         type="button"
         onClick={() => onToggleDir(field)}
@@ -123,7 +106,6 @@ export function SortPill({
         {dirArrow}
       </button>
 
-      {/* Remove */}
       <button
         type="button"
         onClick={() => onRemove(field)}

@@ -146,7 +146,7 @@ export default function WorkflowApp() {
         <TabLink to="/workflow" end icon={<IconTasks />}>Tasks</TabLink>
         <TabLink to="/workflow/projects" icon={<IconProjects />}>Projects</TabLink>
         <TabLink to="/workflow/epics" icon={<IconEpics />}>Epics</TabLink>
-        <TabLink to="/workflow/pipelines" icon={<IconPipelines />}>Pipelines</TabLink>
+        <TabLink to="/workflow/pipelines" icon={<IconPipelines />}>Review</TabLink>
         <TabLink to="/workflow/sessions" icon={<IconSessions />}>Sessions</TabLink>
         <TabLink to="/workflow/insights" icon={<IconInsights />}>Insights</TabLink>
       </nav>

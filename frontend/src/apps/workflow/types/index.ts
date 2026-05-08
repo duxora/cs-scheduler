@@ -5,6 +5,8 @@ export interface StepState {
   value?: string | number
   reason?: string
   error?: string
+  tokens_consumed?: number | null
+  tokens_at_completion?: number | null
 }
 
 export type PipelineType = 'code' | 'research' | 'docs' | 'solo-commit'
@@ -19,9 +21,16 @@ export interface PipelineState {
   pipeline: PipelineType
   size: PipelineSize
   started_at: string
+  completed_at?: string
   heartbeat_at: string | null
   stale: boolean
   steps: Record<string, StepState>
+  tokens_at_claim?: number | null
+  tokens_consumed?: number | null
+}
+
+export interface PipelineRunsResponse {
+  runs: PipelineState[]
 }
 
 export interface PipelineStateResponse {
@@ -43,7 +52,9 @@ export interface Session {
   age_hours: number | null
   liveness_reason: SessionLivenessReason
   name: string | null
+  display_name: string | null
   task_id: number | null
+  task_title: string | null
   heartbeat_at: string | null
 }
 
@@ -159,6 +170,7 @@ export interface ProjectSummary {
   project_name: string
   open_count: number
   in_progress_count: number
+  backlog_count: number
   done_count: number
 }
 
@@ -197,4 +209,18 @@ export interface InsightsResponse {
   alerts: InsightsAlert[]
   total_runs: number
   period: string
+}
+
+export interface HandoffNote {
+  found: boolean
+  branch?: string
+  last_state?: string
+  decision?: string
+}
+
+export interface ReviewSummary {
+  completed: number
+  stalled: number
+  tokens_today: number
+  avg_duration_s: number
 }

@@ -11,7 +11,7 @@ export default function HubShell() {
   return (
     <ThemeContext.Provider value={{ theme, cycle }}>
       <div
-        className="flex min-h-screen text-gray-100"
+        className="flex min-h-screen text-gray-100 lg:overflow-hidden lg:h-screen"
         data-workflow-theme={theme}
         style={{ background: 'var(--hub-shell-bg)' }}
       >
@@ -44,8 +44,8 @@ export default function HubShell() {
           <Sidebar onNavigate={() => setSidebarOpen(false)} />
         </div>
 
-        <main className="flex-1 overflow-y-auto min-w-0 wf-main-canvas">
-          <Suspense fallback={<div className="p-6 text-sm" style={{ color: 'var(--hub-text)' }}>Loading...</div>}>
+        <main className="flex-1 overflow-y-auto min-w-0 lg:overflow-hidden wf-main-canvas">
+          <Suspense fallback={<div className="p-6 md:p-7 lg:p-8 text-sm lg:text-base" style={{ color: 'var(--hub-text)' }}>Loading...</div>}>
             <Outlet />
           </Suspense>
         </main>

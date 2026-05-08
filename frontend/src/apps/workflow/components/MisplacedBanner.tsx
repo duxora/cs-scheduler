@@ -14,6 +14,19 @@ interface MisplacedTask {
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
+// ── hook ───────────────────────────────────────────────────────────────────
+
+export function useMisplacedCount(projectFilter: string): number {
+  const params = new URLSearchParams()
+  if (projectFilter) params.set('project', projectFilter)
+  const { data } = useSWR<MisplacedTask[]>(
+    `/workflow/api/misplaced-tasks?${params}`,
+    fetcher,
+    { refreshInterval: 30000 },
+  )
+  return data?.length ?? 0
+}
+
 // ── main component ─────────────────────────────────────────────────────────
 
 interface MisplacedBannerProps {

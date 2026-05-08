@@ -1,11 +1,17 @@
-import { useMemo, useCallback } from 'react'
-import type { DetailTarget, PipelineType } from '../types'
-import { usePipelineState } from '../hooks/usePipelineState'
-import { useNotifications } from '../hooks/useNotifications'
-import { useUrlParam } from '../hooks/useUrlParam'
-import PipelineBoard from '../components/PipelineBoard'
-import DetailPanel from '../components/DetailPanel'
+import { useCallback, useMemo, useState } from 'react'
 import FilterBar from '../components/common/FilterBar'
+import ReviewFeed from '../components/ReviewFeed'
+import ReviewDetailPanel from '../components/ReviewDetailPanel'
+import SummaryStrip from '../components/SummaryStrip'
+import { useReview, getStalledStep } from '../hooks/useReview'
+import { useUrlParam } from '../hooks/useUrlParam'
+import type { PipelineState, PipelineType } from '../types'
+
+const PERIODS: Record<'today' | '7d' | '30d', number> = {
+  today: 24,
+  '7d': 168,
+  '30d': 720,
+}
 
 const PIPELINE_TYPES: { value: PipelineType | ''; label: string }[] = [
   { value: '', label: 'All types' },
@@ -16,118 +22,158 @@ const PIPELINE_TYPES: { value: PipelineType | ''; label: string }[] = [
 ]
 
 export default function PipelinesPage() {
-  const { pipelines, error, isLoading } = usePipelineState()
-  useNotifications(pipelines)
-
-  const [projectFilter, setProjectFilter] = useUrlParam('project')
-  const [typeFilterRaw, setTypeFilter]    = useUrlParam('type')
+  const [period, setPeriod] = useState<'today' | '7d' | '30d'>('today')
+  const [domainFilter, setDomainFilter] = useUrlParam('project')
+  const [typeFilterRaw, setTypeFilter] = useUrlParam('type')
+  const [detailKey, setDetailKey] = useUrlParam('detail')
   const typeFilter = typeFilterRaw as PipelineType | ''
-  const [detailKey, setDetailKey]         = useUrlParam('detail')
 
-  // Rehydrate the detail target from the URL once the pipelines list arrives.
-  // URL format: "pipeline:<task_id>" or "step:<task_id>:<stepName>".
-  // Session/task kinds aren't produced from PipelinesPage's flow, so we don't
-  // encode them here.
-  const selected = useMemo<DetailTarget | null>(() => {
+  const { stalled, completed, summary, isLoading, error } = useReview(PERIODS[period])
+  const hasError = error != null
+
+  const reviewPipelines = useMemo(() => [...stalled, ...completed], [stalled, completed])
+
+  const selectedTaskId = useMemo(() => {
     if (!detailKey) return null
-    const [kind, idStr, ...rest] = detailKey.split(':')
+    const [kind, idStr] = detailKey.split(':')
+    if (kind !== 'pipeline') return null
     const taskId = Number(idStr)
-    if (!Number.isFinite(taskId)) return null
-    const pipeline = pipelines.find((p) => p.task_id === taskId)
-    if (!pipeline) return null
-    if (kind === 'pipeline') return { kind: 'pipeline', pipeline }
-    if (kind === 'step' && rest.length > 0) {
-      return { kind: 'step', pipeline, stepName: rest.join(':') }
-    }
-    return null
-  }, [detailKey, pipelines])
+    return Number.isFinite(taskId) ? taskId : null
+  }, [detailKey])
+
+  const selectedPipeline = useMemo(
+    () => (selectedTaskId == null ? null : reviewPipelines.find((pipeline) => pipeline.task_id === selectedTaskId) ?? null),
+    [reviewPipelines, selectedTaskId],
+  )
 
   const setSelected = useCallback(
-    (target: DetailTarget | null) => {
-      if (!target) { setDetailKey(''); return }
-      if (target.kind === 'pipeline') {
-        setDetailKey(`pipeline:${target.pipeline.task_id}`)
-      } else if (target.kind === 'step') {
-        setDetailKey(`step:${target.pipeline.task_id}:${target.stepName}`)
-      } else {
-        // session/task detail panels aren't triggered from this page
-        setDetailKey('')
-      }
+    (pipeline: PipelineState | null) => {
+      setDetailKey(pipeline ? `pipeline:${pipeline.task_id}` : '')
     },
     [setDetailKey],
   )
 
-  // Derive unique project names from pipelines
-  const projects = useMemo(() => {
+  const matchesFilters = useCallback(
+    (pipeline: PipelineState) => {
+      if (domainFilter && pipeline.domain !== domainFilter) return false
+      if (typeFilter && pipeline.pipeline !== typeFilter) return false
+      return true
+    },
+    [domainFilter, typeFilter],
+  )
+
+  const filteredPipelines = useMemo(
+    () => reviewPipelines.filter(matchesFilters),
+    [matchesFilters, reviewPipelines],
+  )
+
+  const filteredStalled = useMemo(
+    () => stalled.filter(matchesFilters),
+    [matchesFilters, stalled],
+  )
+  const filteredCompleted = useMemo(
+    () => completed.filter(matchesFilters),
+    [completed, matchesFilters],
+  )
+
+  const stalledSteps = useMemo<Record<number, string>>(() => {
+    const map: Record<number, string> = {}
+    for (const pipeline of stalled) {
+      map[pipeline.task_id] = getStalledStep(pipeline)
+    }
+    return map
+  }, [stalled])
+
+  const domains = useMemo(() => {
     const seen = new Set<string>()
-    for (const p of pipelines) {
-      if (p.domain) seen.add(p.domain)
+    for (const pipeline of reviewPipelines) {
+      if (pipeline.domain) seen.add(pipeline.domain)
     }
     return Array.from(seen).sort()
-  }, [pipelines])
-
-  const filtered = useMemo(() => {
-    let result = pipelines
-    if (projectFilter) {
-      result = result.filter((p) => p.domain === projectFilter)
-    }
-    if (typeFilter) {
-      result = result.filter((p) => p.pipeline === typeFilter)
-    }
-    return result
-  }, [pipelines, projectFilter, typeFilter])
+  }, [reviewPipelines])
 
   return (
-    <div className="flex flex-col h-full text-gray-100 bg-gray-950">
-      {/* Filter bar */}
-      <FilterBar className="py-2" style={{ borderColor: 'rgb(31 41 55)' }}>
+    <div className="flex h-full flex-col bg-gray-950 text-gray-100">
+      <FilterBar className="border-gray-800 py-2">
+        <div className="flex items-center gap-1 rounded-md border border-gray-800 bg-gray-900/60 p-1">
+          {(['today', '7d', '30d'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setPeriod(value)}
+              className={[
+                'rounded px-2 py-1 text-[11px] font-medium transition-colors',
+                period === value ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-gray-100',
+              ].join(' ')}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+
         <FilterBar.Select
-          value={projectFilter}
-          onChange={(e) => setProjectFilter(e.target.value)}
+          value={domainFilter}
+          onChange={(e) => setDomainFilter(e.target.value)}
           aria-label="Filter by domain"
         >
           <option value="">All domains</option>
-          {projects.map((d) => (
-            <option key={d} value={d}>{d}</option>
+          {domains.map((domain) => (
+            <option key={domain} value={domain}>
+              {domain}
+            </option>
           ))}
         </FilterBar.Select>
+
         <FilterBar.Select
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as PipelineType | '')}
-          aria-label="Filter by pipeline type"
+          onChange={(e) => setTypeFilter(e.target.value)}
+          aria-label="Filter by type"
         >
-          {PIPELINE_TYPES.map((opt) => (
-            <option key={opt.value} value={opt.value}>{opt.label}</option>
+          {PIPELINE_TYPES.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
           ))}
         </FilterBar.Select>
+
         <FilterBar.Count>
-          {isLoading ? 'Loading...' : `${filtered.length} pipeline${filtered.length !== 1 ? 's' : ''}`}
+          {isLoading ? 'Loading...' : `${filteredPipelines.length} run${filteredPipelines.length === 1 ? '' : 's'}`}
         </FilterBar.Count>
-        {error && (
-          <span className="text-[10px] text-red-400 bg-red-950 px-1.5 py-0.5 rounded border border-red-800">
+
+        {hasError && (
+          <span className="rounded border border-red-800 bg-red-950 px-1.5 py-0.5 text-[10px] text-red-300">
             API error
           </span>
         )}
       </FilterBar>
 
-      {/* Content */}
-      <div className="flex flex-1 min-h-0">
-        <div className="flex-1 overflow-y-auto px-4 py-3">
-          {isLoading && (
-            <div className="flex items-center justify-center h-24">
-              <span className="text-xs text-gray-600">Loading pipelines...</span>
+      <SummaryStrip summary={summary} />
+
+      <div className="flex min-h-0 flex-1">
+        <div className="min-w-0 flex-1 overflow-y-auto px-4 py-3">
+          {isLoading ? (
+            <div className="flex h-24 items-center justify-center">
+              <span className="text-xs text-gray-600">Loading review feed...</span>
             </div>
-          )}
-          {!isLoading && (
-            <PipelineBoard pipelines={filtered} onSelect={setSelected} />
+          ) : (
+            <ReviewFeed
+              stalled={filteredStalled}
+              completed={filteredCompleted}
+              stalledSteps={stalledSteps}
+              selectedId={selectedTaskId}
+              onSelect={setSelected}
+            />
           )}
         </div>
 
-        {/* Detail panel */}
-        {selected && (
-          <div className="w-80 shrink-0 border-l border-gray-800">
-            <DetailPanel target={selected} onClose={() => setSelected(null)} />
-          </div>
+        {selectedPipeline && (
+          <ReviewDetailPanel
+            pipeline={selectedPipeline}
+            isStalled={stalledSteps[selectedPipeline.task_id] != null}
+            stalledStep={stalledSteps[selectedPipeline.task_id] ?? 'start'}
+            onClose={() => setSelected(null)}
+            onDismiss={() => setSelected(null)}
+          />
         )}
       </div>
     </div>
