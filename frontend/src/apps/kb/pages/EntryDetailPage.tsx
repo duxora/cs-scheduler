@@ -6,6 +6,28 @@ import { deleteEntry } from '../lib/api'
 import { domainBadgeClass, confidenceBadgeClass, formatDate } from '../lib/domain'
 import type { KBEntry } from '../types'
 
+function estimateReadTime(text: string): string {
+  const words = text.trim().split(/\s+/).length
+  const minutes = Math.max(1, Math.round(words / 200))
+  return `${minutes} min read`
+}
+
+// Reframe a declarative takeaway into a discussion question
+function toDiscussionQuestion(takeaway: string): string {
+  const s = takeaway.trim().replace(/\.$/, '')
+  // Pattern: "Avoid X" → "How does your team currently handle X?"
+  const avoidMatch = s.match(/^Avoid (.+)/i)
+  if (avoidMatch?.[1]) return `How does your team currently handle ${avoidMatch[1].toLowerCase()}?`
+  const investMatch = s.match(/^Invest in (.+)/i)
+  if (investMatch?.[1]) return `How much are we investing in ${investMatch[1].toLowerCase()}?`
+  const challengeMatch = s.match(/^Challenge (.+)/i)
+  if (challengeMatch?.[1]) return `Do we challenge ${challengeMatch[1].toLowerCase()} enough?`
+  const recognizeMatch = s.match(/^(Recognize|Understand|Ensure|Consider|Use|Leverage) (.+)/i)
+  if (recognizeMatch?.[1] && recognizeMatch?.[2]) return `Do we ${recognizeMatch[1].toLowerCase()} ${recognizeMatch[2].toLowerCase()}?`
+  // Fallback: prepend "How does this apply to..."
+  return `How does this apply to us: "${s}"?`
+}
+
 export default function EntryDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -98,52 +120,71 @@ export default function EntryDetailPage() {
       </Link>
 
       {/* Header */}
-      <div className="flex items-start justify-between mb-6 gap-4">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-bold break-words">{entry.title}</h1>
-          <div className="flex flex-wrap items-center gap-2 mt-2">
-            <span className={`text-xs px-1.5 py-0.5 rounded border ${domainBadgeClass(entry.domain)}`}>
-              {entry.domain}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold break-words mb-3">{entry.title}</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`text-xs px-1.5 py-0.5 rounded border ${domainBadgeClass(entry.domain)}`}>
+            {entry.domain}
+          </span>
+          <span className={`text-xs px-1.5 py-0.5 rounded border ${confidenceBadgeClass(entry.confidence)}`}>
+            {entry.confidence}
+          </span>
+          {entry.source_type && (
+            <span className="text-xs px-1.5 py-0.5 rounded border border-gray-700 text-gray-400">
+              {entry.source_type}
             </span>
-            <span className={`text-xs px-1.5 py-0.5 rounded border ${confidenceBadgeClass(entry.confidence)}`}>
-              {entry.confidence}
-            </span>
-            {entry.source_type && (
-              <span className="text-xs px-1.5 py-0.5 rounded border border-gray-700 text-gray-400">
-                {entry.source_type}
-              </span>
-            )}
-            {entry.tags.map((tag) => (
-              <span key={tag} className="text-xs text-gray-500">#{tag}</span>
-            ))}
-          </div>
-        </div>
-        <div className="text-right text-sm text-gray-500 shrink-0">
-          <div>ID: <code className="text-xs bg-gray-800 px-1 py-0.5 rounded">{entry.id}</code></div>
-          <div>Created: {formatDate(entry.created)}</div>
-          {entry.expires && <div>Expires: {entry.expires}</div>}
+          )}
+          <span className="text-xs text-gray-500">
+            {estimateReadTime(entry.summary + ' ' + (entry.key_takeaways?.join(' ') ?? ''))}
+          </span>
+          <span className="text-xs text-gray-600">·</span>
+          <span className="text-xs text-gray-500">{formatDate(entry.created)}</span>
+          {entry.tags.map((tag) => (
+            <span key={tag} className="text-xs text-gray-600">#{tag}</span>
+          ))}
         </div>
       </div>
 
       {/* Two column layout */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main content (2 cols) */}
-        <div className="lg:col-span-2 space-y-6">
+        <div className="lg:col-span-2 space-y-5">
+          {/* TL;DR hook — first takeaway as the headline insight */}
+          {entry.key_takeaways && entry.key_takeaways.length > 0 && (
+            <div className="border-l-4 border-blue-500 bg-blue-950/30 rounded-r-lg px-4 py-3">
+              <p className="text-xs text-blue-400 font-semibold uppercase tracking-wide mb-1">TL;DR</p>
+              <p className="text-gray-200 font-medium leading-snug">{entry.key_takeaways[0]}</p>
+            </div>
+          )}
+
           {/* Summary */}
-          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-            <h2 className="text-lg font-semibold mb-3">Summary</h2>
-            <p className="text-gray-300 leading-relaxed">{entry.summary}</p>
+          <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-5">
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Overview</h2>
+            <p className="text-gray-200 leading-relaxed text-[15px]">{entry.summary}</p>
+            {entry.source && (
+              <a
+                href={entry.source}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 mt-4 text-xs text-blue-400 hover:text-blue-300 border border-blue-800/60 hover:border-blue-600 bg-blue-950/20 px-3 py-1.5 rounded transition-colors"
+              >
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+                Read original source
+              </a>
+            )}
           </div>
 
           {/* Key Takeaways */}
           {entry.key_takeaways && entry.key_takeaways.length > 0 && (
-            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-              <h2 className="text-lg font-semibold mb-3">Key Takeaways</h2>
-              <ul className="space-y-2">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-5">
+              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Key Takeaways</h2>
+              <ul className="space-y-3">
                 {entry.key_takeaways.map((takeaway, i) => (
-                  <li key={i} className="flex items-start gap-2">
-                    <span className="text-blue-400 mt-0.5">•</span>
-                    <span className="text-gray-300">{takeaway}</span>
+                  <li key={i} className="flex items-start gap-3">
+                    <span className="text-blue-400 font-bold text-sm mt-0.5 shrink-0">{i + 1}.</span>
+                    <span className="text-gray-200 leading-snug">{takeaway}</span>
                   </li>
                 ))}
               </ul>
@@ -152,9 +193,27 @@ export default function EntryDetailPage() {
 
           {/* Context / When to Apply */}
           {entry.context && (
-            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-              <h2 className="text-lg font-semibold mb-3">When to Apply</h2>
-              <p className="text-gray-300 leading-relaxed">{entry.context}</p>
+            <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-5">
+              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">When to Apply</h2>
+              <p className="text-gray-200 leading-relaxed text-[15px]">{entry.context}</p>
+            </div>
+          )}
+
+          {/* Discussion questions for team sharing */}
+          {entry.key_takeaways && entry.key_takeaways.length > 1 && (
+            <div className="bg-amber-950/20 border border-amber-800/40 rounded-lg p-5">
+              <h2 className="text-sm font-semibold text-amber-400 uppercase tracking-wide mb-3">
+                Discussion Questions
+              </h2>
+              <p className="text-xs text-gray-500 mb-3">For team sharing or tech talks — use these to spark conversation.</p>
+              <ul className="space-y-2">
+                {entry.key_takeaways.slice(0, 4).map((t, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-amber-500 shrink-0 mt-0.5">?</span>
+                    <span className="text-gray-300 text-sm leading-snug">{toDiscussionQuestion(t)}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>
@@ -163,47 +222,33 @@ export default function EntryDetailPage() {
         <div className="space-y-6">
           {/* Metadata */}
           <div className="bg-gray-800/50 border border-gray-700 rounded-lg p-4">
-            <h2 className="text-lg font-semibold mb-3">Metadata</h2>
-            <dl className="space-y-2 text-sm">
-              <dt className="text-gray-500">Domain</dt>
-              <dd className="font-medium">{entry.domain}</dd>
-              <dt className="text-gray-500 mt-2">Confidence</dt>
-              <dd className="font-medium">{entry.confidence}</dd>
-              {entry.source_type && (
-                <>
-                  <dt className="text-gray-500 mt-2">Source Type</dt>
-                  <dd className="font-medium">{entry.source_type}</dd>
-                </>
-              )}
-              {entry.source && (
-                <>
-                  <dt className="text-gray-500 mt-2">Source</dt>
-                  <dd>
-                    <a
-                      href={entry.source}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-400 hover:underline text-xs break-all"
-                    >
-                      {entry.source}
-                    </a>
-                  </dd>
-                </>
+            <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3">Details</h2>
+            <dl className="space-y-3 text-sm">
+              <div>
+                <dt className="text-gray-500 text-xs mb-0.5">Entry ID</dt>
+                <dd><code className="text-xs bg-gray-900 px-1.5 py-0.5 rounded text-gray-300">{entry.id}</code></dd>
+              </div>
+              <div>
+                <dt className="text-gray-500 text-xs mb-0.5">Indexed</dt>
+                <dd className="text-gray-300">{formatDate(entry.created)}</dd>
+              </div>
+              {entry.expires && (
+                <div>
+                  <dt className="text-gray-500 text-xs mb-0.5">Expires</dt>
+                  <dd className="text-gray-300">{entry.expires}</dd>
+                </div>
               )}
               {entry.tags.length > 0 && (
-                <>
-                  <dt className="text-gray-500 mt-2">Tags</dt>
+                <div>
+                  <dt className="text-gray-500 text-xs mb-1">Tags</dt>
                   <dd className="flex flex-wrap gap-1">
                     {entry.tags.map((tag) => (
-                      <span
-                        key={tag}
-                        className="bg-gray-900 px-2 py-0.5 rounded text-xs text-gray-400"
-                      >
+                      <span key={tag} className="bg-gray-900 px-2 py-0.5 rounded text-xs text-gray-400">
                         #{tag}
                       </span>
                     ))}
                   </dd>
-                </>
+                </div>
               )}
             </dl>
           </div>
