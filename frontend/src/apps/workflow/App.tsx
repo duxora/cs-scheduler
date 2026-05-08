@@ -89,7 +89,7 @@ function useTabUrlSaver() {
     const base = TAB_BASES.find((b) =>
       b === '/workflow'
         ? location.pathname === '/workflow' || location.pathname === '/workflow/'
-        : location.pathname.startsWith(b)
+        : location.pathname === b || location.pathname === b + '/'
     )
     if (base) saveTabUrl(base, location.pathname + location.search)
   }, [location])
