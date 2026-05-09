@@ -224,7 +224,7 @@ export default function TaskNewPage() {
                   </option>
                 ))}
               </select>
-              <a href="/scheduler/accounts" className="text-xs text-blue-400 hover:text-blue-300 whitespace-nowrap">+ New</a>
+              <a href="/scheduler/settings/accounts" className="text-xs text-blue-400 hover:text-blue-300 whitespace-nowrap">+ New</a>
             </div>
           </div>
 
