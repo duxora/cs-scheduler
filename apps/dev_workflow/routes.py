@@ -5,6 +5,7 @@ import hashlib
 import json as jsonlib
 import os
 import sqlite3
+import sys
 import subprocess
 import time
 from datetime import datetime
@@ -769,6 +770,205 @@ def _parse_heartbeat(hb: Optional[str]) -> Optional[float]:
         return None
 
 
+def _coerce_iso_mtime(path: str) -> Optional[float]:
+    try:
+        return os.path.getmtime(path)
+    except Exception:
+        return None
+
+
+def _final_step_tokens(steps: object) -> int:
+    if not isinstance(steps, dict) or not steps:
+        return 0
+
+    final_step = list(steps.values())[-1]
+    if not isinstance(final_step, dict):
+        return 0
+
+    tokens_at_completion = final_step.get("tokens_at_completion")
+    if tokens_at_completion is None:
+        return 0
+
+    try:
+        return int(tokens_at_completion)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reconcile_pipeline_state(conn: sqlite3.Connection) -> None:
+    """Backfill terminal runs and remove abandoned state files.
+
+    This runs on the hot path but is intentionally best-effort: any failure is
+    swallowed so the user-visible API still responds.
+    """
+    cleaned_done = 0
+    cleaned_abandoned = 0
+
+    try:
+        state_files = sorted(globmod.glob("/tmp/claude-workflow-*.json"))
+        if not state_files:
+            return
+
+        states: list[tuple[str, dict]] = []
+        claimed_ids: set[int] = set()
+        for path in state_files:
+            try:
+                with open(path) as f:
+                    state = jsonlib.load(f)
+            except Exception:
+                continue
+
+            task_id = state.get("claimed_tkt")
+            if isinstance(task_id, int):
+                claimed_ids.add(task_id)
+            else:
+                try:
+                    claimed_ids.add(int(task_id))
+                except (TypeError, ValueError):
+                    pass
+
+            states.append((path, state))
+
+        task_map: dict[int, sqlite3.Row] = {}
+        if claimed_ids:
+            placeholders = ",".join("?" for _ in claimed_ids)
+            rows = conn.execute(
+                f"SELECT id, status, completed_at FROM tasks WHERE id IN ({placeholders})",
+                tuple(sorted(claimed_ids)),
+            ).fetchall()
+            task_map = {int(r["id"]): r for r in rows}
+
+        for path, state in states:
+            session_id = state.get("session_id", "")
+            task_id_raw = state.get("claimed_tkt")
+            try:
+                task_id = int(task_id_raw)
+            except (TypeError, ValueError):
+                continue
+
+            task = task_map.get(task_id)
+            if not task:
+                continue
+
+            heartbeat_row = conn.execute(
+                "SELECT heartbeat_at FROM claims WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            heartbeat_at = heartbeat_row["heartbeat_at"] if heartbeat_row else None
+            heartbeat_s = _parse_heartbeat(heartbeat_at)
+            mtime_s = _coerce_iso_mtime(path)
+
+            if task["status"] == "done":
+                try:
+                    exists = conn.execute(
+                        "SELECT 1 FROM pipeline_runs WHERE session_id = ? LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    if not exists:
+                        steps = state.get("steps", {})
+                        tokens_at_claim = state.get("tokens_at_claim") or 0
+                        try:
+                            tokens_at_claim_int = int(tokens_at_claim)
+                        except (TypeError, ValueError):
+                            tokens_at_claim_int = 0
+                        tokens_at_completion = _final_step_tokens(steps)
+                        tokens_consumed = max(0, tokens_at_completion - tokens_at_claim_int)
+                        completed_at = task["completed_at"] or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                        started_at = state.get("started_at", "")
+                        duration_s = 0
+                        try:
+                            started_dt = datetime.fromisoformat(str(started_at).replace("Z", "+00:00"))
+                            completed_dt = datetime.fromisoformat(str(completed_at).replace("Z", "+00:00"))
+                            duration_s = max(0, int((completed_dt - started_dt).total_seconds()))
+                        except Exception:
+                            duration_s = 0
+
+                        conn.execute(
+                            """
+                            INSERT INTO pipeline_runs
+                              (task_id, session_id, pipeline, size, domain, started_at, completed_at, duration_s, steps, tokens_at_claim, tokens_consumed)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                task_id,
+                                session_id,
+                                state.get("pipeline", "code"),
+                                state.get("size", "medium"),
+                                state.get("ticket_domain"),
+                                started_at,
+                                completed_at,
+                                duration_s,
+                                jsonlib.dumps(steps, separators=(",", ":")),
+                                tokens_at_claim_int,
+                                tokens_consumed,
+                            ),
+                        )
+                    conn.execute("DELETE FROM claims WHERE session_id = ?", (session_id,))
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    cleaned_done += 1
+                except Exception:
+                    continue
+                continue
+
+            abandoned = False
+            if task["status"] == "in_progress":
+                if heartbeat_s is not None:
+                    abandoned = (datetime.utcnow().timestamp() - heartbeat_s) > (24 * 3600)
+                elif mtime_s is not None:
+                    abandoned = (datetime.utcnow().timestamp() - mtime_s) > (24 * 3600)
+
+            if abandoned:
+                try:
+                    completed_at_ts = heartbeat_s if heartbeat_s is not None else mtime_s
+                    completed_at = datetime.utcfromtimestamp(completed_at_ts).strftime("%Y-%m-%d %H:%M:%S") if completed_at_ts else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                    exists = conn.execute(
+                        "SELECT 1 FROM pipeline_runs WHERE session_id = ? LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    if not exists:
+                        conn.execute(
+                            """
+                            INSERT INTO pipeline_runs
+                              (task_id, session_id, pipeline, size, domain, started_at, completed_at, duration_s, steps, tokens_at_claim, tokens_consumed, dismissed)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                            """,
+                            (
+                                task_id,
+                                session_id,
+                                state.get("pipeline", "code"),
+                                state.get("size", "medium"),
+                                state.get("ticket_domain"),
+                                state.get("started_at", ""),
+                                completed_at,
+                                0,
+                                jsonlib.dumps(state.get("steps", {}), separators=(",", ":")),
+                                state.get("tokens_at_claim") or 0,
+                                0,
+                            ),
+                        )
+                    conn.execute("DELETE FROM claims WHERE session_id = ?", (session_id,))
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    cleaned_abandoned += 1
+                except Exception:
+                    continue
+
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        if cleaned_done or cleaned_abandoned:
+            print(f"[reconcile] cleaned {cleaned_done} done, {cleaned_abandoned} abandoned", file=sys.stderr)
+
+
 def _list_sessions(claim_map: Optional[dict] = None) -> list[dict]:
     """List Claude Code sessions, classifying each as alive/stale.
 
@@ -853,8 +1053,8 @@ def _list_sessions(claim_map: Optional[dict] = None) -> list[dict]:
 
 @router.get("/api/sessions", response_class=JSONResponse)
 async def api_sessions():
-    # Load claims + task titles together — saves a per-session lookup when
-    # deriving the display_name for claimed sessions.
+    # Heartbeat is the authority for work activity; ps only confirms the
+    # session process is still present.
     try:
         conn = sqlite3.connect(str(TKT_DB_PATH))
         conn.row_factory = sqlite3.Row
@@ -877,61 +1077,90 @@ async def api_sessions():
 
 @router.get("/api/pipeline-state", response_class=JSONResponse)
 async def api_pipeline_state():
+    # Liveness is keyed off claims.heartbeat_at; file mtime is no longer consulted.
     """Read active dev-flow pipeline states from /tmp session files."""
     state_files = globmod.glob("/tmp/claude-workflow-*.json")
     pipelines = []
 
-    # Get claims for heartbeat data
-    claims = {}
     try:
         conn = sqlite3.connect(str(TKT_DB_PATH))
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT task_id, session_id, heartbeat_at FROM claims").fetchall()
-        conn.close()
+        _reconcile_pipeline_state(conn)
+
+        file_states: list[tuple[str, dict]] = []
+        claimed_ids: set[int] = set()
+        for path in state_files:
+            try:
+                with open(path) as f:
+                    state = jsonlib.load(f)
+            except (jsonlib.JSONDecodeError, IOError):
+                continue
+            file_states.append((path, state))
+            task_id = state.get("claimed_tkt")
+            try:
+                claimed_ids.add(int(task_id))
+            except (TypeError, ValueError):
+                continue
+
+        task_map: dict[int, sqlite3.Row] = {}
+        if claimed_ids:
+            placeholders = ",".join("?" for _ in claimed_ids)
+            rows = conn.execute(
+                f"SELECT id, status, completed_at FROM tasks WHERE id IN ({placeholders})",
+                tuple(sorted(claimed_ids)),
+            ).fetchall()
+            task_map = {int(r["id"]): r for r in rows}
+
+        rows = conn.execute(
+            "SELECT task_id, session_id, heartbeat_at FROM claims"
+        ).fetchall()
         claims = {r["session_id"]: dict(r) for r in rows}
+
+        for path, state in file_states:
+            session_id = state.get("session_id", "")
+            task_id = state.get("claimed_tkt")
+            if not task_id:
+                continue
+            try:
+                task_id_int = int(task_id)
+            except (TypeError, ValueError):
+                continue
+
+            task = task_map.get(task_id_int)
+            if task and task["status"] == "done":
+                continue
+
+            claim = claims.get(session_id, {})
+            heartbeat_at = claim.get("heartbeat_at")
+            stale = False
+            if heartbeat_at:
+                try:
+                    hb_time = datetime.fromisoformat(heartbeat_at.replace("Z", "+00:00"))
+                    stale = (datetime.now(hb_time.tzinfo) - hb_time).total_seconds() > 300
+                except Exception:
+                    pass
+
+            pipelines.append({
+                "task_id": task_id_int,
+                "title": state.get("ticket_title", ""),
+                "type": state.get("ticket_type", ""),
+                "domain": state.get("ticket_domain"),
+                "session_id": session_id,
+                "pipeline": state.get("pipeline", "code"),
+                "size": state.get("size", "medium"),
+                "started_at": state.get("started_at", ""),
+                "heartbeat_at": heartbeat_at,
+                "stale": stale,
+                "dismissed": False,
+                "steps": state.get("steps", {}),
+            })
     except Exception:
         pass
-
-    for path in state_files:
+    finally:
         try:
-            with open(path) as f:
-                state = jsonlib.load(f)
-        except (jsonlib.JSONDecodeError, IOError):
-            continue
-
-        session_id = state.get("session_id", "")
-        task_id = state.get("claimed_tkt")
-        if not task_id:
-            continue
-
-        # Get heartbeat from claims
-        claim = claims.get(session_id, {})
-        heartbeat_at = claim.get("heartbeat_at")
-        stale = False
-        if heartbeat_at:
-            try:
-                hb_time = datetime.fromisoformat(heartbeat_at.replace("Z", "+00:00"))
-                stale = (datetime.now(hb_time.tzinfo) - hb_time).total_seconds() > 300
-            except Exception:
-                pass
-        else:
-            mtime = os.path.getmtime(path)
-            stale = (datetime.utcnow().timestamp() - mtime) > 300
-
-        pipelines.append({
-            "task_id": task_id,
-            "title": state.get("ticket_title", ""),
-            "type": state.get("ticket_type", ""),
-            "domain": state.get("ticket_domain"),
-            "session_id": session_id,
-            "pipeline": state.get("pipeline", "code"),
-            "size": state.get("size", "medium"),
-            "started_at": state.get("started_at", ""),
-            "heartbeat_at": heartbeat_at,
-            "stale": stale,
-            "dismissed": False,
-            "steps": state.get("steps", {}),
-        })
+            conn.close()
+        except Exception:
+            pass
 
     return JSONResponse({"pipelines": pipelines})
 

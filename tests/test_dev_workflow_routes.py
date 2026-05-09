@@ -10,6 +10,8 @@ developer's live ~/.backlog/backlog.db.
 from __future__ import annotations
 
 import sqlite3
+import json
+from uuid import uuid4
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,8 @@ CREATE TABLE projects (
   name TEXT NOT NULL,
   repo_path TEXT,
   context TEXT,
+  priority TEXT,
+  mode TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   archived_at TEXT
 );
@@ -89,6 +93,14 @@ CREATE TABLE workflow_events (
   payload TEXT NOT NULL DEFAULT '{}'
 );
 
+CREATE TABLE claims (
+  task_id INTEGER PRIMARY KEY,
+  agent TEXT NOT NULL,
+  session_id TEXT,
+  claimed_at TEXT DEFAULT (datetime('now')),
+  heartbeat_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE pipeline_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER NOT NULL,
@@ -99,7 +111,10 @@ CREATE TABLE pipeline_runs (
   started_at TEXT NOT NULL,
   completed_at TEXT NOT NULL,
   duration_s INTEGER NOT NULL,
-  steps TEXT NOT NULL
+  steps TEXT NOT NULL,
+  tokens_at_claim INTEGER,
+  tokens_consumed INTEGER,
+  dismissed INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -137,7 +152,7 @@ def _seed(conn: sqlite3.Connection) -> None:
              "2026-04-03 09:00:00", "2026-04-18 09:00:00", None, None, None),
             (103, "dev-flow", "Investigate insights gap", "task", "critical", "in_progress",
              "investigate-insights-gap", None,
-             "2026-04-04 09:00:00", "2026-04-18 09:00:00", None, "2026-04-30", None),
+             "2026-04-04 09:00:00", "2026-04-18 09:00:00", None, "2026-06-30", None),
             # Stale open task (created > 14 days ago; updated_at trails too)
             (104, "dev-flow", "Dusty backlog item", "task", "low", "open",
              "dusty-backlog-item", None,
@@ -405,11 +420,111 @@ def test_task_detail_ancestors_include_slug(client):
 
 # ── Empty-state contracts (tickets #787/#788/#789 baselines) ───────────────
 
-def test_pipeline_state_shape(client):
+def test_pipeline_state_shape(client, monkeypatch):
     """Empty DB → {pipelines: []} — frontend must not crash on empty."""
+    import apps.dev_workflow.routes as routes
+
+    monkeypatch.setattr(routes.globmod, "glob", lambda pattern: [])
     resp = client.get("/workflow/api/pipeline-state")
     assert resp.status_code == 200
     assert resp.json() == {"pipelines": []}
+
+
+def test_pipeline_state_reconciles_done_sessions(client, monkeypatch):
+    import apps.dev_workflow.routes as routes
+
+    done_session = f"done-{uuid4().hex}"
+    live_session = f"live-{uuid4().hex}"
+    done_path = Path(f"/tmp/claude-workflow-{done_session}.json")
+    live_path = Path(f"/tmp/claude-workflow-{live_session}.json")
+
+    done_state = {
+        "session_id": done_session,
+        "claimed_tkt": 101,
+        "ticket_title": "Add slug URLs",
+        "ticket_type": "task",
+        "ticket_domain": "workflow",
+        "pipeline": "code",
+        "size": "medium",
+        "started_at": "2026-05-08T10:00:00Z",
+        "tokens_at_claim": 100,
+        "steps": {
+            "kb_lookup": {"status": "done", "tokens_at_completion": 140},
+            "implement": {"status": "done", "tokens_at_completion": 160},
+        },
+    }
+    live_state = {
+        "session_id": live_session,
+        "claimed_tkt": 103,
+        "ticket_title": "Investigate insights gap",
+        "ticket_type": "task",
+        "ticket_domain": "workflow",
+        "pipeline": "code",
+        "size": "large",
+        "started_at": "2026-05-08T11:00:00Z",
+        "tokens_at_claim": 250,
+        "steps": {
+            "kb_lookup": {"status": "done", "tokens_at_completion": 275},
+            "implement": {"status": "pending", "tokens_at_completion": 300},
+        },
+    }
+
+    done_path.write_text(json.dumps(done_state), encoding="utf-8")
+    live_path.write_text(json.dumps(live_state), encoding="utf-8")
+
+    conn = sqlite3.connect(str(routes.TKT_DB_PATH))
+    try:
+        conn.executemany(
+            "INSERT INTO claims (task_id, agent, session_id, heartbeat_at) VALUES (?, ?, ?, ?)",
+            [
+                (101, "cli", done_session, "2026-05-09 00:00:00"),
+                (103, "cli", live_session, "2026-05-09 00:00:00"),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    original_glob = routes.globmod.glob
+    monkeypatch.setattr(
+        routes.globmod,
+        "glob",
+        lambda pattern: [str(done_path), str(live_path)] if pattern == "/tmp/claude-workflow-*.json" else original_glob(pattern),
+    )
+
+    try:
+        resp = client.get("/workflow/api/pipeline-state")
+        assert resp.status_code == 200
+        pipelines = resp.json()["pipelines"]
+        assert [p["task_id"] for p in pipelines] == [103]
+
+        conn = sqlite3.connect(str(routes.TKT_DB_PATH))
+        try:
+            pipeline_runs = conn.execute(
+                "SELECT session_id, task_id, dismissed FROM pipeline_runs WHERE session_id = ?",
+                (done_session,),
+            ).fetchone()
+            assert pipeline_runs is not None
+            assert pipeline_runs[0] == done_session
+            assert pipeline_runs[1] == 101
+            assert pipeline_runs[2] == 0
+
+            claim = conn.execute(
+                "SELECT 1 FROM claims WHERE session_id = ?",
+                (done_session,),
+            ).fetchone()
+            assert claim is None
+
+            conn.execute("DELETE FROM pipeline_runs WHERE session_id = ?", (done_session,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert not done_path.exists()
+        assert live_path.exists()
+    finally:
+        done_path.unlink(missing_ok=True)
+        live_path.unlink(missing_ok=True)
 
 
 def test_insights_empty_shape(client):
