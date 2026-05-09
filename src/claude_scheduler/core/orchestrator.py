@@ -89,10 +89,12 @@ class Orchestrator:
         err_id = self.db.record_error(
             task.name, run_id, error_type, error_msg, stderr)
 
-        if task.notify in ("errors", "all"):
+        if task.notify in ("errors", "all") and not result.get("auth_failure"):
             notify_error(task.name, error_msg, attempt)
 
         if task.on_failure == "investigate":
+            if result.get("auth_failure"):
+                return
             state = self.db.get_task_state(task.name)
             consec = state["consecutive_failures"] if state else 1
 

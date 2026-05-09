@@ -744,6 +744,117 @@ def cmd_kb_ask(args):
     console.print(Panel(answer, title="Answer"))
 
 
+# ── Accounts ──
+
+def cmd_accounts_list(args):
+    db = get_db()
+    accounts = db.list_accounts()
+    if not accounts:
+        console.print("[dim]No accounts configured. Try: cs accounts add <name>[/dim]")
+        return
+    t = Table(title="Claude accounts")
+    t.add_column("Name")
+    t.add_column("Kind")
+    t.add_column("Ref")
+    t.add_column("Plan")
+    t.add_column("Default")
+    t.add_column("Last used")
+    for a in accounts:
+        ref = a.config_dir or a.api_key_ref or ""
+        t.add_row(
+            a.name,
+            a.kind,
+            ref,
+            a.plan_tier or "-",
+            "★" if a.is_default else "",
+            a.last_used_at or "-",
+        )
+    console.print(t)
+
+
+def cmd_accounts_add(args):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    db = get_db()
+    if db.get_account_by_name(args.name):
+        console.print(f"[red]Account '{args.name}' already exists[/red]")
+        sys.exit(1)
+
+    if args.kind == "config_dir":
+        config_dir = Path(args.config_dir).expanduser() if args.config_dir else Path.home() / ".claude-profiles" / args.name
+        config_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            config_dir.chmod(0o700)
+        except OSError:
+            pass
+        if not args.no_login:
+            console.print(f"[bold]Launching claude /login for {args.name}...[/bold]")
+            console.print(f"  CLAUDE_CONFIG_DIR={config_dir}")
+            env = {**os.environ, "CLAUDE_CONFIG_DIR": str(config_dir)}
+            try:
+                subprocess.run(["claude", "/login"], env=env, check=False)
+            except FileNotFoundError:
+                console.print("[red]`claude` CLI not found in PATH[/red]")
+                sys.exit(1)
+            cred = config_dir / ".credentials.json"
+            if not cred.exists():
+                console.print(f"[red]Login did not produce credentials at {cred}[/red]")
+                console.print("[dim]Re-run with `--no-login` if you want to register anyway.[/dim]")
+                sys.exit(1)
+        acct = db.create_account(
+            args.name,
+            "config_dir",
+            config_dir=str(config_dir),
+            plan_tier=args.plan_tier,
+            is_default=args.default,
+        )
+    else:
+        ref = args.api_key_ref
+        if not (ref.startswith("keychain:") or ref.startswith("op://")):
+            console.print("[red]--api-key-ref must start with 'keychain:' or 'op://'[/red]")
+            sys.exit(1)
+        acct = db.create_account(
+            args.name,
+            "api_key",
+            api_key_ref=ref,
+            plan_tier=args.plan_tier or "api",
+            is_default=args.default,
+        )
+    console.print(f"[green]Created account '{acct.name}' ({acct.kind})[/green]")
+    if acct.is_default:
+        console.print("  [dim]Set as default.[/dim]")
+
+
+def cmd_accounts_remove(args):
+    db = get_db()
+    acct = db.get_account_by_name(args.name)
+    if not acct:
+        console.print(f"[red]No account named '{args.name}'[/red]")
+        sys.exit(1)
+    if not args.force:
+        ans = input(f"Delete account '{args.name}' ({acct.kind})? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            console.print("[dim]Aborted.[/dim]")
+            return
+    db.delete_account(acct.id)
+    console.print(f"[green]Removed account '{acct.name}'[/green]")
+    if acct.config_dir:
+        console.print(f"  [dim]Profile dir not deleted: {acct.config_dir}[/dim]")
+        console.print(f"  [dim]rm -rf {acct.config_dir}  # to remove credentials[/dim]")
+
+
+def cmd_accounts_set_default(args):
+    db = get_db()
+    acct = db.get_account_by_name(args.name)
+    if not acct:
+        console.print(f"[red]No account named '{args.name}'[/red]")
+        sys.exit(1)
+    db.set_default_account(acct.id)
+    console.print(f"[green]Default account: '{acct.name}'[/green]")
+
+
 # ── Argument parser ──
 
 def main():
@@ -827,6 +938,32 @@ def main():
     p.add_argument("--mark-read", action="store_true")
     p.add_argument("--act", type=int, metavar="ID")
     p.set_defaults(func=cmd_notifications)
+
+    # accounts
+    acc_parser = sub.add_parser("accounts", help="Manage Claude accounts")
+    acc_sub = acc_parser.add_subparsers(dest="acc_command", required=True)
+
+    p = acc_sub.add_parser("list", help="List configured accounts")
+    p.set_defaults(func=cmd_accounts_list)
+
+    p = acc_sub.add_parser("add", help="Add a new account")
+    p.add_argument("name")
+    p.add_argument("--kind", choices=["config_dir", "api_key"], default="config_dir")
+    p.add_argument("--config-dir", help="Profile dir (default ~/.claude-profiles/<name>)")
+    p.add_argument("--api-key-ref", help="keychain:<name> or op://Vault/Item/field")
+    p.add_argument("--plan-tier", choices=["pro", "max", "team", "api"])
+    p.add_argument("--default", action="store_true", help="Set as default account")
+    p.add_argument("--no-login", action="store_true", help="Skip claude /login (config_dir only)")
+    p.set_defaults(func=cmd_accounts_add)
+
+    p = acc_sub.add_parser("remove", help="Delete an account record")
+    p.add_argument("name")
+    p.add_argument("--force", "-f", action="store_true")
+    p.set_defaults(func=cmd_accounts_remove)
+
+    p = acc_sub.add_parser("set-default", help="Set the default account")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_accounts_set_default)
 
     p = sub.add_parser("doctor", help="Health check")
     p.set_defaults(func=cmd_doctor)

@@ -299,25 +299,37 @@ def execute_task(task: Task, logs_dir: Path,
                 result["fanout_warning"] = fanout_warning
             return result
         else:
+            auth_failure = False
+            if account is not None and getattr(account, "kind", None) == "config_dir":
+                from .notify import _auth_failure_pattern, notify_auth_failure
+                if _auth_failure_pattern(stderr):
+                    try:
+                        notify_auth_failure(account, db)
+                    except Exception:
+                        pass
+                    auth_failure = True
             return {**{"status": "failed", "exit_code": proc.returncode,
                     "log_file": str(log_file),
                     "stderr": stderr, "stdout": stdout,
                     "session_id": session_id,
-                    "error_message": f"Exit code {proc.returncode}"}, **cost,
+                    "error_message": f"Exit code {proc.returncode}",
+                    "auth_failure": auth_failure}, **cost,
                     **({"account_id": account.id} if account else {})}
 
     except subprocess.TimeoutExpired:
         return {**{"status": "timeout", "exit_code": None,
                 "log_file": str(log_file), "stderr": "",
                 "stdout": "", "session_id": "",
-                "error_message": f"Timed out after {task.timeout}s"},
+                "error_message": f"Timed out after {task.timeout}s",
+                "auth_failure": False},
                 **({"account_id": account.id} if account else {})}
 
     except FileNotFoundError:
         return {**{"status": "failed", "exit_code": None,
                 "log_file": str(log_file), "stderr": "",
                 "stdout": "", "session_id": "",
-                "error_message": "claude CLI not found in PATH"},
+                "error_message": "claude CLI not found in PATH",
+                "auth_failure": False},
                 **({"account_id": account.id} if account else {})}
     finally:
         _release_profile_lock(profile_lock_fd)
