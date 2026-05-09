@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAccounts } from '../hooks/useAccounts'
 import { schedulerApi } from '../lib/api'
+import { relativeTime } from '../lib/relativeTime'
+import type { Account, AccountHealth } from '../types'
 
 type AccountKind = 'config_dir' | 'api_key'
 
@@ -15,6 +17,18 @@ type NewAccountForm = {
 }
 
 const CONFIG_DIR_PLAN_OPTIONS = ['', 'pro', 'max', 'team']
+
+const HEALTH_PILL: Record<AccountHealth, { label: string; cls: string }> = {
+  active: { label: '● Active', cls: 'bg-green-900/40 text-green-300' },
+  idle: { label: '◐ Idle', cls: 'bg-yellow-900/40 text-yellow-300' },
+  auth_failure: { label: '⚠ Re-login', cls: 'bg-red-900/40 text-red-300' },
+  untested: { label: '○ Never used', cls: 'bg-gray-800 text-gray-400' },
+}
+
+function HealthPill({ health }: { health?: AccountHealth }) {
+  const cfg = HEALTH_PILL[health ?? 'untested']
+  return <span className={`rounded px-1.5 py-0.5 text-[10px] ${cfg.cls}`}>{cfg.label}</span>
+}
 
 function deriveConfigDir(name: string) {
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-')
@@ -43,8 +57,12 @@ export default function AccountsPage() {
   const [configDirManuallyEdited, setConfigDirManuallyEdited] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [testStatus, setTestStatus] = useState<
+    Record<string, { state: 'idle' | 'running' | 'ok' | 'fail'; message?: string }>
+  >({})
   const [form, setForm] = useState<NewAccountForm>(defaultForm())
   const verifyAbortRef = useRef<AbortController | null>(null)
+  const statusTimeoutsRef = useRef<Record<string, number>>({})
 
   function openModal(kind: AccountKind = 'config_dir') {
     setForm(defaultForm(kind))
@@ -252,6 +270,69 @@ export default function AccountsPage() {
     }
   }
 
+  function clearAccountStatusLater(id: string, delayMs: number) {
+    const existing = statusTimeoutsRef.current[id]
+    if (existing) window.clearTimeout(existing)
+    statusTimeoutsRef.current[id] = window.setTimeout(() => {
+      setTestStatus((s) => {
+        const next = { ...s }
+        delete next[id]
+        return next
+      })
+      delete statusTimeoutsRef.current[id]
+    }, delayMs)
+  }
+
+  function setAccountStatus(
+    id: string,
+    state: 'idle' | 'running' | 'ok' | 'fail',
+    message?: string,
+    clearAfterMs?: number,
+  ) {
+    const existing = statusTimeoutsRef.current[id]
+    if (existing) {
+      window.clearTimeout(existing)
+      delete statusTimeoutsRef.current[id]
+    }
+    setTestStatus((s) => ({ ...s, [id]: { state, message } }))
+    if (clearAfterMs) clearAccountStatusLater(id, clearAfterMs)
+  }
+
+  useEffect(() => {
+    return () => {
+      Object.values(statusTimeoutsRef.current).forEach((timeoutId) => window.clearTimeout(timeoutId))
+      statusTimeoutsRef.current = {}
+    }
+  }, [])
+
+  async function handleCopyRelogin(account: Account) {
+    if (!account.config_dir) return
+    const cmd = `CLAUDE_CONFIG_DIR=${account.config_dir} claude /login`
+    try {
+      await navigator.clipboard.writeText(cmd)
+      setAccountStatus(account.id, 'ok', 'Command copied', 4000)
+    } catch {
+      setActionError('Clipboard write failed')
+    }
+  }
+
+  async function handleTest(account: Account) {
+    setAccountStatus(account.id, 'running')
+    try {
+      const r = await schedulerApi.testAccount(account.id)
+      if (r.ok) {
+        setAccountStatus(account.id, 'ok', `OK (${r.took_ms}ms)`, 6000)
+        await refresh()
+      } else {
+        const tail = (r.stderr_tail || `exit ${r.exit_code}`).slice(0, 60)
+        setAccountStatus(account.id, 'fail', `✗ ${tail}`, 6000)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error'
+      setAccountStatus(account.id, 'fail', msg, 6000)
+    }
+  }
+
   return (
     <div className="flex flex-col h-full bg-gray-950 text-gray-100 overflow-y-auto">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-gray-800 shrink-0">
@@ -293,60 +374,92 @@ export default function AccountsPage() {
             <span className="text-xs text-gray-600">No accounts found</span>
           </div>
         ) : (
-          <table className="w-full text-xs border-collapse">
-            <thead>
-              <tr className="text-gray-500 border-b border-gray-800">
-                <th className="text-left py-1.5 pr-4 font-medium">Name</th>
-                <th className="text-left py-1.5 pr-4 font-medium">Kind</th>
-                <th className="text-left py-1.5 pr-4 font-medium">Plan</th>
-                <th className="text-left py-1.5 pr-4 font-medium">Created</th>
-                <th className="text-left py-1.5 pr-4 font-medium">Last used</th>
-                <th className="text-left py-1.5 font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {accounts.map((account) => (
-                <tr key={account.id} className="border-b border-gray-900 hover:bg-gray-900/40">
-                  <td className="py-2 pr-4">
-                    <div className="flex items-center gap-2">
-                      {account.is_default ? (
-                        <span className="inline-flex h-2 w-2 rounded-full bg-green-400" aria-hidden="true" />
-                      ) : (
-                        <span className="inline-flex h-2 w-2 rounded-full bg-gray-700" aria-hidden="true" />
+          <ul className="space-y-2">
+            {accounts.map((account) => (
+              <li key={account.id} className="rounded border border-gray-800 bg-gray-900/40 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium text-gray-100">{account.name}</span>
+                      <HealthPill health={account.health} />
+                      {account.is_default && (
+                        <span className="rounded bg-blue-900/40 px-1.5 py-0.5 text-[10px] text-blue-300">
+                          ★ default
+                        </span>
                       )}
-                      <span className="text-gray-200">{account.name}</span>
+                      {account.plan_tier && (
+                        <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300">
+                          {account.plan_tier}
+                        </span>
+                      )}
+                      <span className="text-[10px] text-gray-500">{account.kind}</span>
                     </div>
-                  </td>
-                  <td className="py-2 pr-4 text-gray-400">
-                    {account.kind === 'config_dir' ? 'profile' : 'api key'}
-                  </td>
-                  <td className="py-2 pr-4 text-gray-400">{account.plan_tier ?? '—'}</td>
-                  <td className="py-2 pr-4 text-gray-400">{new Date(account.created_at).toLocaleString()}</td>
-                  <td className="py-2 pr-4 text-gray-400">
-                    {account.last_used_at ? new Date(account.last_used_at).toLocaleString() : '—'}
-                  </td>
-                  <td className="py-2">
-                    <div className="flex items-center gap-2">
-                      {!account.is_default && (
+                    <div className="mt-1 truncate text-[11px] text-gray-500">
+                      {account.config_dir || account.api_key_ref}
+                    </div>
+                    <div className="mt-1 flex items-center gap-3 text-[11px] text-gray-400">
+                      <span>last used {relativeTime(account.last_used_at)}</span>
+                      <span>· {account.runs_24h ?? 0} runs/24h</span>
+                      {(account.failures_24h ?? 0) > 0 && (
+                        <span className="text-red-400">{account.failures_24h} failed</span>
+                      )}
+                      <span>· ${(account.cost_30d_usd ?? 0).toFixed(2)} 30d</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-gray-400">
+                      <span>{account.runs_24h ?? 0} runs/24h</span>
+                      <span className={(account.failures_24h ?? 0) > 0 ? 'text-red-400' : ''}>
+                        {account.failures_24h ?? 0} failures/24h
+                      </span>
+                      <span>${(account.cost_30d_usd ?? 0).toFixed(2)} 30d</span>
+                    </div>
+                  </div>
+                  <div className="shrink-0">
+                    <div className="flex flex-col items-end gap-1.5">
+                      <div className="flex items-center gap-1.5">
+                        {account.kind === 'config_dir' && (
+                          <button
+                            onClick={() => handleCopyRelogin(account)}
+                            className="rounded bg-gray-800 px-2 py-1 text-[10px] text-gray-200 hover:bg-gray-700"
+                          >
+                            Copy re-login
+                          </button>
+                        )}
                         <button
-                          onClick={() => handleSetDefault(account.id)}
-                          className="text-[10px] bg-gray-800 hover:bg-gray-700 text-gray-300 px-2 py-0.5 rounded border border-gray-700 transition-colors"
+                          onClick={() => handleTest(account)}
+                          disabled={testStatus[account.id]?.state === 'running'}
+                          className="rounded bg-blue-700 px-2 py-1 text-[10px] text-white hover:bg-blue-600 disabled:opacity-50"
                         >
-                          Set default
+                          {testStatus[account.id]?.state === 'running' ? 'Testing…' : 'Test'}
                         </button>
+                        {!account.is_default && (
+                          <button
+                            onClick={() => handleSetDefault(account.id)}
+                            className="rounded border border-gray-700 bg-gray-800 px-2 py-1 text-[10px] text-gray-200 hover:bg-gray-700"
+                          >
+                            Set default
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDelete(account.id, account.name)}
+                          className="rounded bg-red-900 px-2 py-1 text-[10px] text-red-100 hover:bg-red-800"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                      {testStatus[account.id]?.state === 'ok' && (
+                        <span className="text-[10px] text-green-400">{testStatus[account.id]!.message}</span>
                       )}
-                      <button
-                        onClick={() => handleDelete(account.id, account.name)}
-                        className="text-[10px] bg-red-900 hover:bg-red-800 text-red-100 px-2 py-0.5 rounded transition-colors"
-                      >
-                        Delete
-                      </button>
+                      {testStatus[account.id]?.state === 'fail' && (
+                        <span className="max-w-xs truncate text-[10px] text-red-400">
+                          {testStatus[account.id]!.message}
+                        </span>
+                      )}
                     </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 

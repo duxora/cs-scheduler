@@ -1,4 +1,5 @@
 export type TaskKind = 'default' | 'advisor' | 'brainstorm'
+export type AccountHealth = 'active' | 'idle' | 'auth_failure' | 'untested'
 
 export interface SchedulerTask {
   name: string
@@ -30,6 +31,18 @@ export interface Account {
   is_default: boolean
   created_at: string
   last_used_at: string | null
+  runs_24h?: number
+  failures_24h?: number
+  cost_30d_usd?: number
+  auth_failure_recent?: boolean
+  health?: AccountHealth
+}
+
+export type AccountTestResult = {
+  ok: boolean
+  exit_code: number | null
+  stderr_tail: string
+  took_ms: number
 }
 
 export interface AccountCreatePayload {

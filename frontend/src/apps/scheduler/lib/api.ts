@@ -5,6 +5,7 @@ import type {
   AccountCreatePayload,
   AccountCredentialCheck,
   AccountNameCheck,
+  AccountTestResult,
   RunRecord,
   ErrorRecord,
   SchedulerStats,
@@ -130,6 +131,12 @@ export const schedulerApi = {
   deleteAccount: async (id: string): Promise<void> => {
     const res = await fetch(`${BASE}/accounts/${id}`, { method: 'DELETE' })
     if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`)
+  },
+
+  testAccount: async (id: string): Promise<AccountTestResult> => {
+    const res = await fetch(`${BASE}/accounts/${id}/test`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
   },
 
   setDefaultAccount: async (id: string): Promise<Account> => {

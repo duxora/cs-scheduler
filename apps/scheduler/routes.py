@@ -745,8 +745,8 @@ class AccountUpdate(BaseModel):
     plan_tier: str | None = None
 
 
-def _account_to_dict(a) -> dict:
-    return {
+def _account_to_dict(a, db=None) -> dict:
+    base = {
         "id": a.id,
         "name": a.name,
         "kind": a.kind,
@@ -757,13 +757,72 @@ def _account_to_dict(a) -> dict:
         "created_at": a.created_at,
         "last_used_at": a.last_used_at or None,
     }
+    if db is None:
+        return base
+    base.update(_account_health(a, db))
+    return base
+
+
+def _account_health(a, db) -> dict:
+    from datetime import datetime, timezone, timedelta
+    from claude_scheduler.core.notify import (
+        _AUTH_COOLDOWN_DIR, _AUTH_COOLDOWN_SECONDS,
+    )
+    import time
+
+    now = datetime.now(timezone.utc)
+    cutoff_24h = (now - timedelta(hours=24)).isoformat()
+    cutoff_30d = (now - timedelta(days=30)).isoformat()
+
+    runs_24h = db.execute(
+        "SELECT COUNT(*) FROM task_runs WHERE account_id=? AND started_at >= ?",
+        (a.id, cutoff_24h),
+    ).fetchone()[0]
+    failures_24h = db.execute(
+        "SELECT COUNT(*) FROM task_runs"
+        " WHERE account_id=? AND started_at >= ? AND status='failed'",
+        (a.id, cutoff_24h),
+    ).fetchone()[0]
+    cost_30d_row = db.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0) FROM task_runs"
+        " WHERE account_id=? AND started_at >= ?",
+        (a.id, cutoff_30d),
+    ).fetchone()
+    cost_30d = float(cost_30d_row[0] or 0.0)
+
+    sentinel = _AUTH_COOLDOWN_DIR / a.id
+    auth_recent = False
+    try:
+        mtime = sentinel.stat().st_mtime
+        auth_recent = (time.time() - mtime) < _AUTH_COOLDOWN_SECONDS
+    except FileNotFoundError:
+        pass
+
+    if auth_recent:
+        health = "auth_failure"
+    elif not a.last_used_at:
+        health = "untested"
+    else:
+        try:
+            last_used = datetime.fromisoformat(a.last_used_at.replace("Z", "+00:00"))
+            health = "idle" if (now - last_used) > timedelta(days=30) else "active"
+        except (ValueError, TypeError):
+            health = "untested"
+
+    return {
+        "runs_24h": int(runs_24h or 0),
+        "failures_24h": int(failures_24h or 0),
+        "cost_30d_usd": round(cost_30d, 4),
+        "auth_failure_recent": auth_recent,
+        "health": health,
+    }
 
 
 @router.get("/api/accounts")
 async def api_accounts_list():
     db = get_db()
     try:
-        return JSONResponse([_account_to_dict(a) for a in db.list_accounts()])
+        return JSONResponse([_account_to_dict(a, db) for a in db.list_accounts()])
     finally:
         db.close()
 
@@ -852,7 +911,7 @@ async def api_accounts_get(account_id: str):
         acc = db.get_account(account_id)
         if not acc:
             return JSONResponse({"error": "not found"}, status_code=404)
-        return JSONResponse(_account_to_dict(acc))
+        return JSONResponse(_account_to_dict(acc, db))
     finally:
         db.close()
 
@@ -897,3 +956,78 @@ async def api_accounts_set_default(account_id: str):
         return JSONResponse(_account_to_dict(db.set_default_account(account_id)))
     finally:
         db.close()
+
+
+@router.post("/api/accounts/{account_id}/test")
+async def api_accounts_test(account_id: str):
+    import os
+    import time as _time
+    from claude_scheduler.core.secrets import resolve_secret_ref, SecretResolutionError
+
+    db = get_db()
+    try:
+        acc = db.get_account(account_id)
+        if not acc:
+            return JSONResponse({"error": "not found"}, status_code=404)
+    finally:
+        db.close()
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        return JSONResponse({
+            "ok": False,
+            "exit_code": None,
+            "stderr_tail": "claude CLI not found in PATH",
+            "took_ms": 0,
+        }, status_code=200)
+
+    env = os.environ.copy()
+    if acc.kind == "config_dir":
+        if not acc.config_dir:
+            return JSONResponse({
+                "ok": False,
+                "exit_code": None,
+                "stderr_tail": "account has no config_dir",
+                "took_ms": 0,
+            }, status_code=200)
+        env["CLAUDE_CONFIG_DIR"] = acc.config_dir
+        env.pop("ANTHROPIC_API_KEY", None)
+    else:
+        if not acc.api_key_ref:
+            return JSONResponse({
+                "ok": False,
+                "exit_code": None,
+                "stderr_tail": "account has no api_key_ref",
+                "took_ms": 0,
+            }, status_code=200)
+        try:
+            env["ANTHROPIC_API_KEY"] = resolve_secret_ref(acc.api_key_ref)
+        except SecretResolutionError as e:
+            return JSONResponse({
+                "ok": False,
+                "exit_code": None,
+                "stderr_tail": f"secret resolution failed: {e}",
+                "took_ms": 0,
+            }, status_code=200)
+        env.pop("CLAUDE_CONFIG_DIR", None)
+
+    cmd = [claude_bin, "-p", "say ok", "--max-turns", "1", "--output-format", "json"]
+    t0 = _time.monotonic()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=30, env=env)
+    except subprocess.TimeoutExpired:
+        return JSONResponse({
+            "ok": False,
+            "exit_code": None,
+            "stderr_tail": "timed out after 30s",
+            "took_ms": int((_time.monotonic() - t0) * 1000),
+        }, status_code=200)
+
+    took_ms = int((_time.monotonic() - t0) * 1000)
+    stderr = proc.stderr.decode(errors="replace") if proc.stderr else ""
+    return JSONResponse({
+        "ok": proc.returncode == 0,
+        "exit_code": proc.returncode,
+        "stderr_tail": stderr[-400:] if stderr else "",
+        "took_ms": took_ms,
+    })
