@@ -1,5 +1,6 @@
 import type {
   SchedulerTask,
+  TaskKind,
   Account,
   AccountCreatePayload,
   RunRecord,
@@ -88,6 +89,7 @@ export const schedulerApi = {
   createTask: (data: {
     name: string
     schedule: string
+    kind?: TaskKind
     prompt: string
     model: string
     max_turns: number

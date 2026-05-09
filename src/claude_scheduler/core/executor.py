@@ -1,4 +1,5 @@
 """Execute a task via claude -p with timeout, locking, and session tracking."""
+import dataclasses
 import json
 import subprocess
 import fcntl
@@ -7,6 +8,7 @@ from hashlib import sha1
 from datetime import datetime
 from pathlib import Path
 from .models import Task
+from .prompts import wrap_prompt
 from .secrets import resolve_secret_ref, SecretResolutionError
 
 LOCK_DIR = Path.home() / ".claude-scheduler" / "locks"
@@ -58,6 +60,19 @@ def _extract_cost(stdout: str) -> dict:
         }
     except (json.JSONDecodeError, TypeError):
         return {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+
+
+def _extract_structured_output(stdout: str) -> str:
+    try:
+        outer = json.loads(stdout)
+        inner_text = outer.get("result", "") or outer.get("response", "")
+        if not isinstance(inner_text, str):
+            return ""
+        cleaned = _strip_code_fence(inner_text)
+        json.loads(cleaned)
+        return cleaned
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return ""
 
 def _acquire_lock(task: Task) -> int | None:
     LOCK_DIR.mkdir(parents=True, exist_ok=True)
@@ -115,8 +130,65 @@ def _release_profile_lock(fd):
     os.close(fd)
 
 
+def _strip_code_fence(s: str) -> str:
+    s = s.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+    if s.endswith("```"):
+        s = s.rsplit("```", 1)[0]
+    return s.strip()
+
+
+def _fanout_brainstorm_children(task: Task, structured_output: str) -> str:
+    try:
+        parsed = json.loads(structured_output)
+        actions = parsed.get("actions", [])
+        if not isinstance(actions, list) or len(actions) != 3:
+            raise ValueError("brainstorm output must contain exactly 3 actions")
+
+        parent_dir = task.file_path.parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+
+        for idx, action in enumerate(actions, start=1):
+            if not isinstance(action, dict):
+                raise ValueError("brainstorm actions must be objects")
+            child_path = parent_dir / f"{task.file_path.stem}-action-{idx}.task"
+            if child_path.exists():
+                continue
+
+            action_name = str(action.get("name", "")).strip() or f"action-{idx}"
+            action_prompt = str(action.get("prompt", "")).strip()
+            action_tools = str(action.get("tools", "")).strip() or task.tools
+
+            lines = [
+                f"# name: {task.name} :: {action_name}",
+                "# schedule: manual",
+                "# kind: default",
+                "# enabled: true",
+                f"# max_turns: {task.max_turns}",
+                f"# timeout: {task.timeout}",
+                f"# tools: {action_tools}",
+                "# model: opus",
+            ]
+            if task.account:
+                lines.append(f"# account: {task.account}")
+
+            lines.extend(["", "---", "", action_prompt, ""])
+            child_path.write_text("\n".join(lines))
+        return ""
+    except Exception as exc:
+        return f"brainstorm fan-out warning: {exc}"
+
+
 def execute_task(task: Task, logs_dir: Path,
                  attempt: int = 1, db=None) -> dict:
+    if task.kind in ("advisor", "brainstorm"):
+        new_prompt = wrap_prompt(task.kind, task.prompt)
+        new_model = task.model
+        if not task.model or task.model in ("sonnet", "claude-sonnet-4", "claude-sonnet-4-6", "default"):
+            new_model = "opus"
+        task = dataclasses.replace(task, prompt=new_prompt, model=new_model)
+
     logs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_file = logs_dir / f"{task.slug}-{ts}-a{attempt}.json"
@@ -128,11 +200,17 @@ def execute_task(task: Task, logs_dir: Path,
                 "log_file": str(log_file), "exit_code": None,
                 "stderr": "", "stdout": "", "session_id": ""}
 
-    cmd = build_claude_command(task)
     workdir = os.path.expanduser(task.workdir) if task.workdir else None
     profile_lock_fd = None
     account = None
     env = None
+
+    if task.kind in ("advisor", "brainstorm") and task.account == "" and db is not None:
+        default_account = db.get_default_account()
+        if default_account:
+            task = dataclasses.replace(task, account=default_account.name)
+
+    cmd = build_claude_command(task)
 
     try:
         if task.account:
@@ -202,13 +280,24 @@ def execute_task(task: Task, logs_dir: Path,
         log_file.write_bytes(proc.stdout or b"")
 
         if proc.returncode == 0:
+            structured_output = ""
+            fanout_warning = ""
+            if task.kind in ("advisor", "brainstorm"):
+                structured_output = _extract_structured_output(stdout)
+                if task.kind == "brainstorm" and structured_output:
+                    fanout_warning = _fanout_brainstorm_children(task, structured_output)
             if account and db is not None:
                 db.touch_account_last_used(account.id)
-            return {**{"status": "success", "exit_code": 0,
-                    "log_file": str(log_file),
-                    "stderr": stderr, "stdout": stdout,
-                    "session_id": session_id}, **cost,
-                    **({"account_id": account.id} if account else {})}
+            result = {**{"status": "success", "exit_code": 0,
+                         "log_file": str(log_file),
+                         "stderr": stderr, "stdout": stdout,
+                         "session_id": session_id,
+                         "structured_output": structured_output},
+                      **cost,
+                      **({"account_id": account.id} if account else {})}
+            if fanout_warning:
+                result["fanout_warning"] = fanout_warning
+            return result
         else:
             return {**{"status": "failed", "exit_code": proc.returncode,
                     "log_file": str(log_file),

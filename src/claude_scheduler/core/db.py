@@ -96,7 +96,8 @@ class Database:
         for col, typ in [("input_tokens", "INTEGER DEFAULT 0"),
                          ("output_tokens", "INTEGER DEFAULT 0"),
                          ("cost_usd", "REAL DEFAULT 0.0"),
-                         ("account_id", "TEXT")]:
+                         ("account_id", "TEXT"),
+                         ("structured_output", "TEXT")]:
             try:
                 self.execute(f"ALTER TABLE task_runs ADD COLUMN {col} {typ}")
                 self.conn.commit()
@@ -188,6 +189,13 @@ class Database:
     def set_run_session_id(self, run_id: int, session_id: str):
         self.execute("UPDATE task_runs SET session_id=? WHERE id=?",
                      (session_id, run_id))
+        self.conn.commit()
+
+    def set_run_structured_output(self, run_id: int, payload: str) -> None:
+        self.execute(
+            "UPDATE task_runs SET structured_output=? WHERE id=?",
+            (payload, run_id),
+        )
         self.conn.commit()
 
     def get_run(self, run_id: int) -> RunRecord:

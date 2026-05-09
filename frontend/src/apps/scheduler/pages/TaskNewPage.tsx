@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAccounts } from '../hooks/useAccounts'
 import { schedulerApi } from '../lib/api'
+import type { TaskKind } from '../types'
 
 const MODEL_OPTIONS = [
   'claude-sonnet-4-6',
@@ -22,6 +23,7 @@ export default function TaskNewPage() {
   const [form, setForm] = useState({
     name: '',
     schedule: '0 9 * * *',
+    kind: 'default' as TaskKind,
     prompt: '',
     model: 'claude-sonnet-4-6',
     max_turns: 10,
@@ -36,6 +38,16 @@ export default function TaskNewPage() {
     setForm((prev) => ({ ...prev, [key]: value }))
   }
 
+  const prefillBrainstorm = () => {
+    setForm((f) => ({
+      ...f,
+      kind: 'brainstorm',
+      model: 'opus',
+      schedule: 'manual',
+      tools: 'Read,Bash,Edit,Write',
+    }))
+  }
+
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!form.name.trim() || !form.schedule.trim() || !form.prompt.trim()) {
@@ -47,6 +59,7 @@ export default function TaskNewPage() {
     try {
       const res = await schedulerApi.createTask({
         ...form,
+        kind: form.kind,
         account: form.account,
       })
       if (res.ok || res.redirected) {
@@ -74,6 +87,17 @@ export default function TaskNewPage() {
         </button>
         <span className="text-gray-700">/</span>
         <h1 className="text-sm font-medium text-gray-200">New Task</h1>
+      </div>
+
+      <div className="mb-4 flex items-center justify-between px-4 pt-4">
+        <h1 className="text-sm text-gray-200">New scheduled task</h1>
+        <button
+          type="button"
+          onClick={prefillBrainstorm}
+          className="text-xs px-3 py-1.5 bg-purple-700 hover:bg-purple-600 text-white rounded"
+        >
+          Brainstorm with Opus
+        </button>
       </div>
 
       <form onSubmit={handleSubmit} className="flex-1 px-4 py-4 space-y-4 overflow-y-auto max-w-2xl">
@@ -166,6 +190,21 @@ export default function TaskNewPage() {
               placeholder="Read,Grep,Glob"
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs font-mono text-gray-200 focus:border-blue-600 focus:outline-none"
             />
+          </div>
+
+          {/* Kind */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1" htmlFor="kind">Kind</label>
+            <select
+              id="kind"
+              value={form.kind}
+              onChange={(e) => setField('kind', e.target.value as typeof form.kind)}
+              className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:border-blue-600 focus:outline-none"
+            >
+              <option value="default">Default — run prompt as-is</option>
+              <option value="advisor">Advisor — Opus, structured advice</option>
+              <option value="brainstorm">Brainstorm — Opus, fan out to 3 actions</option>
+            </select>
           </div>
 
           {/* Account */}

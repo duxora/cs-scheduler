@@ -1,7 +1,10 @@
+export type TaskKind = 'default' | 'advisor' | 'brainstorm'
+
 export interface SchedulerTask {
   name: string
   slug: string
   schedule: string
+  kind?: TaskKind
   enabled: boolean
   model: string
   max_turns: number

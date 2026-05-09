@@ -4,7 +4,7 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
-from fastapi import APIRouter, Form, Query, Request
+from fastapi import APIRouter, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -374,6 +374,7 @@ async def create_task(
     name: str = Form(...),
     schedule: str = Form(...),
     prompt: str = Form(...),
+    kind: str = Form(default="default"),
     model: str = Form(default="claude-sonnet-4-6"),
     max_turns: int = Form(default=10),
     timeout: int = Form(default=300),
@@ -381,6 +382,9 @@ async def create_task(
     workdir: str = Form(default=""),
     enabled: bool = Form(default=True),
 ):
+    if kind not in {"default", "advisor", "brainstorm"}:
+        raise HTTPException(status_code=400, detail="invalid kind")
+
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     slug = _slug(name)
     task_path = TASKS_DIR / f"{slug}.task"
@@ -388,11 +392,15 @@ async def create_task(
     lines = [
         f"# name: {name}",
         f"# schedule: {schedule}",
+    ]
+    if kind != "default":
+        lines.append(f"# kind: {kind}")
+    lines.extend([
         f"# model: {model}",
         f"# max_turns: {max_turns}",
         f"# timeout: {timeout}",
         f"# tools: {tools}",
-    ]
+    ])
     if workdir:
         lines.append(f"# workdir: {workdir}")
     if not enabled:

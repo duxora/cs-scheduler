@@ -128,6 +128,11 @@ export default function DashboardPage() {
                     </button>
                   </td>
                   <td className="py-2 pr-4">
+                    {task.kind && task.kind !== 'default' && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/50 text-purple-200 mr-1">
+                        {task.kind}
+                      </span>
+                    )}
                     {accountChip(task.account)}
                   </td>
                   <td className="py-2 pr-4 font-mono text-gray-400">{task.schedule}</td>

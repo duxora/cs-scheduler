@@ -58,6 +58,8 @@ class Orchestrator:
                 "UPDATE task_runs SET account_id=? WHERE id=?",
                 (result["account_id"], run_id))
             self.db.conn.commit()
+        if result.get("structured_output"):
+            self.db.set_run_structured_output(run_id, result["structured_output"])
         self.db.complete_run(
             run_id, status,
             exit_code=result.get("exit_code"),

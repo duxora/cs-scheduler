@@ -22,6 +22,7 @@ class Task:
     prompt: str
     file_path: Path
     account: str = ""
+    kind: str = "default"
     workdir: str = ""
     tools: str = DEFAULTS["tools"]
     max_turns: int = DEFAULTS["max_turns"]
@@ -69,6 +70,7 @@ class RunRecord:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    structured_output: str = ""
 
 @dataclass
 class ErrorRecord:
