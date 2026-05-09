@@ -95,7 +95,8 @@ class Database:
         # Migrations — add cost columns to existing databases
         for col, typ in [("input_tokens", "INTEGER DEFAULT 0"),
                          ("output_tokens", "INTEGER DEFAULT 0"),
-                         ("cost_usd", "REAL DEFAULT 0.0")]:
+                         ("cost_usd", "REAL DEFAULT 0.0"),
+                         ("account_id", "TEXT")]:
             try:
                 self.execute(f"ALTER TABLE task_runs ADD COLUMN {col} {typ}")
                 self.conn.commit()
@@ -153,12 +154,14 @@ class Database:
     # --- Runs ---
     def start_run(self, task_name: str, task_file: str,
                   log_file: str, attempt: int = 1,
-                  session_id: str = "") -> int:
+                  session_id: str = "",
+                  account_id: str = "") -> int:
         cur = self.execute(
             "INSERT INTO task_runs (task_name, task_file, started_at,"
-            " log_file, attempt, session_id)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (task_name, task_file, _now(), log_file, attempt, session_id))
+            " log_file, attempt, session_id, account_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_name, task_file, _now(), log_file, attempt, session_id,
+             account_id))
         self.conn.commit()
         return cur.lastrowid
 

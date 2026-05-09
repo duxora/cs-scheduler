@@ -3,11 +3,14 @@ import json
 import subprocess
 import fcntl
 import os
+from hashlib import sha1
 from datetime import datetime
 from pathlib import Path
 from .models import Task
+from .secrets import resolve_secret_ref, SecretResolutionError
 
 LOCK_DIR = Path.home() / ".claude-scheduler" / "locks"
+PROFILE_LOCK_DIR = Path.home() / ".claude-scheduler" / "profile-locks"
 
 def _find_claude() -> str:
     """Find the claude CLI binary, checking common locations."""
@@ -74,8 +77,46 @@ def _release_lock(fd: int, task: Task):
     lock_path = LOCK_DIR / f"{task.slug}.lock"
     lock_path.unlink(missing_ok=True)
 
+def _profile_lock_key(account) -> str | None:
+    """Return a stable key for the profile-level lock, or None if no lock needed.
+
+    config_dir accounts share the CLI credential file, so two concurrent runs
+    against the same profile can corrupt the auth refresh. api_key accounts
+    have no shared on-disk state — no lock needed.
+    """
+    if account is None:
+        return None
+    if account.kind != "config_dir":
+        return None
+    if not account.config_dir:
+        return None
+    return sha1(account.config_dir.encode()).hexdigest()[:16]
+
+
+def _acquire_profile_lock(account):
+    key = _profile_lock_key(account)
+    if key is None:
+        return None
+    PROFILE_LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path = PROFILE_LOCK_DIR / f"{key}.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except BlockingIOError:
+        os.close(fd)
+        return "BUSY"
+
+
+def _release_profile_lock(fd):
+    if fd is None or fd == "BUSY":
+        return
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+
+
 def execute_task(task: Task, logs_dir: Path,
-                 attempt: int = 1) -> dict:
+                 attempt: int = 1, db=None) -> dict:
     logs_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_file = logs_dir / f"{task.slug}-{ts}-a{attempt}.json"
@@ -89,10 +130,68 @@ def execute_task(task: Task, logs_dir: Path,
 
     cmd = build_claude_command(task)
     workdir = os.path.expanduser(task.workdir) if task.workdir else None
+    profile_lock_fd = None
+    account = None
+    env = None
 
     try:
+        if task.account:
+            if db is None:
+                return {
+                    "status": "failed",
+                    "error_message": "account configured but no db handle for lookup",
+                    "log_file": str(log_file),
+                    "exit_code": None,
+                    "stderr": "",
+                    "stdout": "",
+                    "session_id": "",
+                }
+            account = db.get_account_by_name(task.account)
+            if account is None:
+                return {
+                    "status": "failed",
+                    "error_message": f"account {task.account!r} not found",
+                    "log_file": str(log_file),
+                    "exit_code": None,
+                    "stderr": "",
+                    "stdout": "",
+                    "session_id": "",
+                }
+            profile_lock_fd = _acquire_profile_lock(account)
+            if profile_lock_fd == "BUSY":
+                return {
+                    "status": "skipped",
+                    "reason": "profile busy",
+                    "account_id": account.id,
+                    "log_file": str(log_file),
+                    "exit_code": None,
+                    "stderr": "",
+                    "stdout": "",
+                    "session_id": "",
+                }
+
+            env = os.environ.copy()
+            if account.kind == "config_dir":
+                env["CLAUDE_CONFIG_DIR"] = account.config_dir
+                env.pop("ANTHROPIC_API_KEY", None)
+            elif account.kind == "api_key":
+                try:
+                    env["ANTHROPIC_API_KEY"] = resolve_secret_ref(account.api_key_ref)
+                except SecretResolutionError as exc:
+                    return {
+                        "status": "failed",
+                        "error_message": str(exc),
+                        "account_id": account.id,
+                        "log_file": str(log_file),
+                        "exit_code": None,
+                        "stderr": "",
+                        "stdout": "",
+                        "session_id": "",
+                    }
+                env.pop("CLAUDE_CONFIG_DIR", None)
+
         proc = subprocess.run(
-            cmd, capture_output=True, timeout=task.timeout, cwd=workdir)
+            cmd, capture_output=True, timeout=task.timeout, cwd=workdir, env=env)
 
         stdout = proc.stdout.decode(errors="replace")
         stderr = proc.stderr.decode(errors="replace")
@@ -103,29 +202,36 @@ def execute_task(task: Task, logs_dir: Path,
         log_file.write_bytes(proc.stdout or b"")
 
         if proc.returncode == 0:
+            if account and db is not None:
+                db.touch_account_last_used(account.id)
             return {**{"status": "success", "exit_code": 0,
                     "log_file": str(log_file),
                     "stderr": stderr, "stdout": stdout,
-                    "session_id": session_id}, **cost}
+                    "session_id": session_id}, **cost,
+                    **({"account_id": account.id} if account else {})}
         else:
             return {**{"status": "failed", "exit_code": proc.returncode,
                     "log_file": str(log_file),
                     "stderr": stderr, "stdout": stdout,
                     "session_id": session_id,
-                    "error_message": f"Exit code {proc.returncode}"}, **cost}
+                    "error_message": f"Exit code {proc.returncode}"}, **cost,
+                    **({"account_id": account.id} if account else {})}
 
     except subprocess.TimeoutExpired:
-        return {"status": "timeout", "exit_code": None,
+        return {**{"status": "timeout", "exit_code": None,
                 "log_file": str(log_file), "stderr": "",
                 "stdout": "", "session_id": "",
-                "error_message": f"Timed out after {task.timeout}s"}
+                "error_message": f"Timed out after {task.timeout}s"},
+                **({"account_id": account.id} if account else {})}
 
     except FileNotFoundError:
-        return {"status": "failed", "exit_code": None,
+        return {**{"status": "failed", "exit_code": None,
                 "log_file": str(log_file), "stderr": "",
                 "stdout": "", "session_id": "",
-                "error_message": "claude CLI not found in PATH"}
+                "error_message": "claude CLI not found in PATH"},
+                **({"account_id": account.id} if account else {})}
     finally:
+        _release_profile_lock(profile_lock_fd)
         _release_lock(lock_fd, task)
 
 
@@ -157,7 +263,7 @@ def execute_two_phase(task: Task, logs_dir: Path, db) -> dict:
 
     # Run read-only phase with write tools stripped
     read_task = dataclasses.replace(task, tools=read_tools, prompt=read_prompt)
-    read_result = execute_task(read_task, logs_dir, attempt=1)
+    read_result = execute_task(read_task, logs_dir, attempt=1, db=db)
 
     if read_result["status"] != "success":
         return read_result
@@ -184,10 +290,10 @@ def execute_two_phase(task: Task, logs_dir: Path, db) -> dict:
             **read_result,
         }
 
-    return _execute_write_phase(task, read_result, logs_dir)
+    return _execute_write_phase(task, read_result, logs_dir, db)
 
 
-def _execute_write_phase(task: Task, read_result: dict, logs_dir: Path) -> dict:
+def _execute_write_phase(task: Task, read_result: dict, logs_dir: Path, db=None) -> dict:
     """Execute the write phase using analysis from the read phase as context."""
     import dataclasses
 
@@ -202,4 +308,4 @@ def _execute_write_phase(task: Task, read_result: dict, logs_dir: Path) -> dict:
     )
 
     write_task = dataclasses.replace(task, tools=write_tools, prompt=write_prompt)
-    return execute_task(write_task, logs_dir, attempt=1)
+    return execute_task(write_task, logs_dir, attempt=1, db=db)

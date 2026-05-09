@@ -45,7 +45,7 @@ class Orchestrator:
         if not self._check_budget(task):
             return
 
-        result = run_with_retry(task, self.logs_dir)
+        result = run_with_retry(task, self.logs_dir, db=self.db)
         status = result["status"]
         attempt = result.get("attempt", 1)
         session_id = result.get("session_id", "")
@@ -53,6 +53,11 @@ class Orchestrator:
         run_id = self.db.start_run(
             task.name, str(task.file_path), result.get("log_file", ""),
             attempt=attempt, session_id=session_id)
+        if result.get("account_id"):
+            self.db.execute(
+                "UPDATE task_runs SET account_id=? WHERE id=?",
+                (result["account_id"], run_id))
+            self.db.conn.commit()
         self.db.complete_run(
             run_id, status,
             exit_code=result.get("exit_code"),
@@ -100,7 +105,7 @@ class Orchestrator:
             )
 
             if rem_result["success"]:
-                verify = run_with_retry(task, self.logs_dir)
+                verify = run_with_retry(task, self.logs_dir, db=self.db)
                 if verify["status"] == "success":
                     self.db.update_task_state(task.name, "success")
                     notify_success(task.name)

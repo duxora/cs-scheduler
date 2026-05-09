@@ -21,6 +21,7 @@ class Task:
     schedule: str
     prompt: str
     file_path: Path
+    account: str = ""
     workdir: str = ""
     tools: str = DEFAULTS["tools"]
     max_turns: int = DEFAULTS["max_turns"]
@@ -55,6 +56,7 @@ class RunRecord:
     id: int = 0
     task_name: str = ""
     task_file: str = ""
+    account_id: str = ""
     started_at: str = ""
     completed_at: str = ""
     status: str = "running"  # running | success | failed | timeout
