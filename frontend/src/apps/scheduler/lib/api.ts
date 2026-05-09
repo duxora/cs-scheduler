@@ -1,5 +1,7 @@
 import type {
   SchedulerTask,
+  Account,
+  AccountCreatePayload,
   RunRecord,
   ErrorRecord,
   SchedulerStats,
@@ -35,6 +37,8 @@ async function postJson(path: string): Promise<Response> {
 
 export const schedulerApi = {
   getTasks: () => fetchJson<SchedulerTask[]>('/tasks'),
+
+  listAccounts: () => fetchJson<Account[]>('/accounts'),
 
   getTask: (slug: string) => fetchJson<TaskDetailResponse>(`/tasks/${slug}`),
 
@@ -91,7 +95,32 @@ export const schedulerApi = {
     tools: string
     workdir: string
     enabled: boolean
+    account?: string
   }) => postForm('/tasks-new', data as Record<string, string | number | boolean>),
+
+  createAccount: async (payload: AccountCreatePayload): Promise<Account> => {
+    const res = await fetch(`${BASE}/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(body.error || `HTTP ${res.status}`)
+    }
+    return res.json()
+  },
+
+  deleteAccount: async (id: string): Promise<void> => {
+    const res = await fetch(`${BASE}/accounts/${id}`, { method: 'DELETE' })
+    if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`)
+  },
+
+  setDefaultAccount: async (id: string): Promise<Account> => {
+    const res = await fetch(`${BASE}/accounts/${id}/default`, { method: 'POST' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  },
 
   updatePrompt: (slug: string, prompt: string) =>
     postForm(`/api/update-prompt/${slug}`, { prompt }),

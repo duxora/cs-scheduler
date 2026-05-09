@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAccounts } from '../hooks/useAccounts'
 import { schedulerApi } from '../lib/api'
 
 const MODEL_OPTIONS = [
@@ -14,6 +15,7 @@ const DEFAULT_TOOLS = 'Read,Grep,Glob'
 
 export default function TaskNewPage() {
   const navigate = useNavigate()
+  const { accounts } = useAccounts()
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -25,6 +27,7 @@ export default function TaskNewPage() {
     max_turns: 10,
     timeout: 300,
     tools: DEFAULT_TOOLS,
+    account: '',
     workdir: '',
     enabled: true,
   })
@@ -42,7 +45,10 @@ export default function TaskNewPage() {
     setSubmitting(true)
     setError(null)
     try {
-      const res = await schedulerApi.createTask(form)
+      const res = await schedulerApi.createTask({
+        ...form,
+        account: form.account,
+      })
       if (res.ok || res.redirected) {
         // Backend redirects to /scheduler/tasks/{slug}; navigate to dashboard
         navigate('/scheduler')
@@ -160,6 +166,27 @@ export default function TaskNewPage() {
               placeholder="Read,Grep,Glob"
               className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs font-mono text-gray-200 focus:border-blue-600 focus:outline-none"
             />
+          </div>
+
+          {/* Account */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1" htmlFor="account">Account</label>
+            <div className="flex items-center gap-2">
+              <select
+                id="account"
+                value={form.account}
+                onChange={(e) => setField('account', e.target.value)}
+                className="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:border-blue-600 focus:outline-none"
+              >
+                <option value="">(default)</option>
+                {accounts.map((a) => (
+                  <option key={a.id} value={a.name}>
+                    {a.name}{a.is_default ? ' • default' : ''} — {a.kind === 'config_dir' ? 'profile' : 'api key'}{a.plan_tier ? ` · ${a.plan_tier}` : ''}
+                  </option>
+                ))}
+              </select>
+              <a href="/scheduler/accounts" className="text-xs text-blue-400 hover:text-blue-300 whitespace-nowrap">+ New</a>
+            </div>
           </div>
 
           {/* Workdir */}

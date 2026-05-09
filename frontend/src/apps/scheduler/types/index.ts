@@ -10,10 +10,32 @@ export interface SchedulerTask {
   workdir: string
   file_path: string
   prompt: string
+  account?: string | null
   last_status?: string | null
   last_run_at?: string | null
   next_run_at?: string | null
   run_count?: number
+}
+
+export interface Account {
+  id: string
+  name: string
+  kind: 'config_dir' | 'api_key'
+  config_dir: string | null
+  api_key_ref: string | null
+  plan_tier: string | null
+  is_default: boolean
+  created_at: string
+  last_used_at: string | null
+}
+
+export interface AccountCreatePayload {
+  name: string
+  kind: 'config_dir' | 'api_key'
+  config_dir?: string
+  api_key_ref?: string
+  plan_tier?: string | null
+  is_default?: boolean
 }
 
 export interface RunRecord {

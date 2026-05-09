@@ -17,6 +17,17 @@ function formatDate(ts?: string | null): string {
   return new Date(ts).toLocaleString()
 }
 
+function accountChip(account?: string | null) {
+  if (!account) {
+    return <span className="text-[10px] text-gray-500">(default)</span>
+  }
+  return (
+    <span className="inline-flex items-center rounded border border-gray-700 bg-gray-900 px-1.5 py-0.5 text-[10px] text-gray-300">
+      {account}
+    </span>
+  )
+}
+
 export default function DashboardPage() {
   const { tasks, error: tasksError, isLoading, mutate } = useSchedulerTasks()
   const { stats } = useSchedulerStats()
@@ -97,6 +108,7 @@ export default function DashboardPage() {
             <thead>
               <tr className="text-gray-500 border-b border-gray-800">
                 <th className="text-left py-1.5 pr-4 font-medium">Name</th>
+                <th className="text-left py-1.5 pr-4 font-medium">Account</th>
                 <th className="text-left py-1.5 pr-4 font-medium">Schedule</th>
                 <th className="text-left py-1.5 pr-4 font-medium">Status</th>
                 <th className="text-left py-1.5 pr-4 font-medium">Last Run</th>
@@ -114,6 +126,9 @@ export default function DashboardPage() {
                     >
                       {task.name}
                     </button>
+                  </td>
+                  <td className="py-2 pr-4">
+                    {accountChip(task.account)}
                   </td>
                   <td className="py-2 pr-4 font-mono text-gray-400">{task.schedule}</td>
                   <td className="py-2 pr-4">

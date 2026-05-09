@@ -7,6 +7,7 @@ import TicketsPage from './pages/TicketsPage'
 import NotificationsPage from './pages/NotificationsPage'
 import DoctorPage from './pages/DoctorPage'
 import ApprovalsPage from './pages/ApprovalsPage'
+import AccountsPage from './pages/AccountsPage'
 import TaskDetailPage from './pages/TaskDetailPage'
 import TaskNewPage from './pages/TaskNewPage'
 
@@ -46,6 +47,7 @@ export default function SchedulerApp() {
         <TabLink to="/scheduler/notifications">Notifications</TabLink>
         <TabLink to="/scheduler/doctor">Doctor</TabLink>
         <TabLink to="/scheduler/approvals">Approvals</TabLink>
+        <TabLink to="/scheduler/accounts">Accounts</TabLink>
       </nav>
 
       {/* Sub-route content */}
@@ -58,6 +60,7 @@ export default function SchedulerApp() {
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="doctor" element={<DoctorPage />} />
           <Route path="approvals" element={<ApprovalsPage />} />
+          <Route path="accounts" element={<AccountsPage />} />
           <Route path="tasks/new" element={<TaskNewPage />} />
           <Route path="tasks/:slug" element={<TaskDetailPage />} />
           <Route path="*" element={<Navigate to="/scheduler" replace />} />
