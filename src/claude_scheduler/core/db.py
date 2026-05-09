@@ -2,7 +2,9 @@
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from .models import RunRecord, ErrorRecord, Ticket
+import uuid
+
+from .models import Account, RunRecord, ErrorRecord, Ticket
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS task_runs (
@@ -60,6 +62,24 @@ CREATE TABLE IF NOT EXISTS notifications (
     read INTEGER DEFAULT 0,
     action_cmd TEXT
 );
+CREATE TABLE IF NOT EXISTS claude_accounts (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('config_dir', 'api_key')),
+    config_dir TEXT,
+    api_key_ref TEXT,
+    plan_tier TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT,
+    CHECK (
+        (kind = 'config_dir' AND config_dir IS NOT NULL AND config_dir <> '' AND api_key_ref IS NULL)
+        OR
+        (kind = 'api_key' AND api_key_ref IS NOT NULL AND api_key_ref <> '' AND config_dir IS NULL)
+    )
+);
+CREATE UNIQUE INDEX IF NOT EXISTS claude_accounts_default_uniq
+    ON claude_accounts(is_default) WHERE is_default = 1;
 """
 
 def _now() -> str:
@@ -108,6 +128,21 @@ class Database:
                 self.conn.commit()
             except Exception:
                 pass
+
+    def _row_to_account(self, row) -> Account:
+        if row is None:
+            return None
+        return Account(
+            id=row["id"] or "",
+            name=row["name"] or "",
+            kind=row["kind"] or "",
+            config_dir=row["config_dir"] or "",
+            api_key_ref=row["api_key_ref"] or "",
+            plan_tier=row["plan_tier"] or "",
+            is_default=bool(row["is_default"]),
+            created_at=row["created_at"] or "",
+            last_used_at=row["last_used_at"] or "",
+        )
 
     def execute(self, sql, params=()):
         return self.conn.execute(sql, params)
@@ -347,3 +382,124 @@ class Database:
             "UPDATE pending_approvals SET status=?, reviewed_at=?, reviewer_note=? WHERE id=?",
             (status, _now(), note, approval_id))
         self.conn.commit()
+
+    # --- Accounts ---
+    def create_account(self, name: str, kind: str, *, config_dir=None, api_key_ref=None,
+                       plan_tier=None, is_default: bool = False) -> Account:
+        def _normalize(value):
+            return None if value == "" else value
+
+        config_dir = _normalize(config_dir)
+        api_key_ref = _normalize(api_key_ref)
+        plan_tier = _normalize(plan_tier)
+        account_id = str(uuid.uuid4())
+        created_at = _now()
+        with self.conn:
+            if is_default:
+                self.execute("UPDATE claude_accounts SET is_default = 0")
+            self.execute(
+                "INSERT INTO claude_accounts "
+                "(id, name, kind, config_dir, api_key_ref, plan_tier, is_default, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    account_id, name, kind, config_dir, api_key_ref,
+                    plan_tier, 1 if is_default else 0, created_at,
+                ),
+            )
+        return self.get_account(account_id)
+
+    def list_accounts(self) -> list[Account]:
+        rows = self.execute(
+            "SELECT * FROM claude_accounts ORDER BY name"
+        ).fetchall()
+        return [self._row_to_account(row) for row in rows]
+
+    def get_account(self, account_id: str) -> Account | None:
+        row = self.execute(
+            "SELECT * FROM claude_accounts WHERE id=?",
+            (account_id,),
+        ).fetchone()
+        return self._row_to_account(row)
+
+    def get_account_by_name(self, name: str) -> Account | None:
+        row = self.execute(
+            "SELECT * FROM claude_accounts WHERE name=?",
+            (name,),
+        ).fetchone()
+        return self._row_to_account(row)
+
+    def update_account(self, account_id, **fields) -> Account:
+        allowed = {"name", "config_dir", "api_key_ref", "plan_tier"}
+        rejected = set(fields) - allowed
+        if rejected:
+            raise ValueError(f"unsupported account fields: {', '.join(sorted(rejected))}")
+        if "config_dir" in fields and "api_key_ref" in fields:
+            raise ValueError("config_dir and api_key_ref are mutually exclusive")
+
+        existing = self.get_account(account_id)
+        if not existing:
+            raise ValueError(f"Account {account_id} not found")
+
+        updates = {}
+        if "name" in fields:
+            updates["name"] = fields["name"] or None
+        if "plan_tier" in fields:
+            updates["plan_tier"] = fields["plan_tier"] or None
+
+        if "config_dir" in fields:
+            if existing.kind != "config_dir":
+                raise ValueError("config_dir can only be set for kind='config_dir'")
+            updates["config_dir"] = fields["config_dir"] or None
+            updates["api_key_ref"] = None
+        if "api_key_ref" in fields:
+            if existing.kind != "api_key":
+                raise ValueError("api_key_ref can only be set for kind='api_key'")
+            updates["api_key_ref"] = fields["api_key_ref"] or None
+            updates["config_dir"] = None
+
+        if not updates:
+            return existing
+
+        sets = ", ".join(f"{key}=?" for key in updates)
+        params = list(updates.values()) + [account_id]
+        with self.conn:
+            self.execute(f"UPDATE claude_accounts SET {sets} WHERE id=?", params)
+        updated = self.get_account(account_id)
+        if not updated:
+            raise ValueError(f"Account {account_id} not found")
+        return updated
+
+    def delete_account(self, account_id) -> bool:
+        cur = self.execute(
+            "DELETE FROM claude_accounts WHERE id=?",
+            (account_id,),
+        )
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def set_default_account(self, account_id) -> Account:
+        with self.conn:
+            self.execute("UPDATE claude_accounts SET is_default = 0")
+            cur = self.execute(
+                "UPDATE claude_accounts SET is_default = 1 WHERE id=?",
+                (account_id,),
+            )
+            if cur.rowcount == 0:
+                raise ValueError(f"Account {account_id} not found")
+        updated = self.get_account(account_id)
+        if not updated:
+            raise ValueError(f"Account {account_id} not found")
+        return updated
+
+    def get_default_account(self) -> Account | None:
+        row = self.execute(
+            "SELECT * FROM claude_accounts WHERE is_default = 1 LIMIT 1",
+        ).fetchone()
+        return self._row_to_account(row)
+
+    def touch_account_last_used(self, account_id):
+        with self.conn:
+            self.execute(
+                "UPDATE claude_accounts SET last_used_at = ? WHERE id = ?",
+                (_now(), account_id),
+            )

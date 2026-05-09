@@ -104,4 +104,4 @@ def test_rename_flow():
 
         assert resp.status_code == 200
         assert len(resp.json()["renamed"]) == 1
-        assert (Path(tmpdir) / "INV-001.pdf").exists()
+        assert (Path(resp.json()["output_dir"]) / "INV-001.pdf").exists()

@@ -92,3 +92,16 @@ class Ticket:
     resolution: str = ""
     resolved_at: str = ""
     user_guidance: str = ""
+
+
+@dataclass
+class Account:
+    id: str = ""
+    name: str = ""
+    kind: str = "config_dir"
+    config_dir: str = ""
+    api_key_ref: str = ""
+    plan_tier: str = ""
+    is_default: bool = False
+    created_at: str = ""
+    last_used_at: str = ""

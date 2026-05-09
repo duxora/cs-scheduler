@@ -1,16 +1,19 @@
 """Scheduler web routes — dashboard, history, errors, tickets, and task management."""
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 from server.config import TASKS_DIR, LOGS_DIR, DATA_DIR
 
 from claude_scheduler.core.db import Database
 from claude_scheduler.core.parser import find_tasks, parse_task
+from claude_scheduler.core.secrets import validate_secret_ref
 
 router = APIRouter()
 SERVER_TEMPLATES = Path(__file__).parent.parent.parent / "server" / "templates"
@@ -723,5 +726,133 @@ async def api_approvals_json():
             artifact = db.get_artifact(item["artifact_id"])
             item["artifact"] = dict(artifact) if artifact else None
         return JSONResponse([dict(a) for a in pending])
+    finally:
+        db.close()
+
+
+class AccountCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    kind: str
+    config_dir: str | None = None
+    api_key_ref: str | None = None
+    plan_tier: str | None = None
+    is_default: bool = False
+
+
+class AccountUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    config_dir: str | None = None
+    api_key_ref: str | None = None
+    plan_tier: str | None = None
+
+
+def _account_to_dict(a) -> dict:
+    return {
+        "id": a.id,
+        "name": a.name,
+        "kind": a.kind,
+        "config_dir": a.config_dir or None,
+        "api_key_ref": a.api_key_ref or None,
+        "plan_tier": a.plan_tier or None,
+        "is_default": bool(a.is_default),
+        "created_at": a.created_at,
+        "last_used_at": a.last_used_at or None,
+    }
+
+
+@router.get("/api/accounts")
+async def api_accounts_list():
+    db = get_db()
+    try:
+        return JSONResponse([_account_to_dict(a) for a in db.list_accounts()])
+    finally:
+        db.close()
+
+
+@router.post("/api/accounts", status_code=201)
+async def api_accounts_create(payload: AccountCreate):
+    if payload.kind not in ("config_dir", "api_key"):
+        return JSONResponse({"error": "kind must be 'config_dir' or 'api_key'"}, status_code=400)
+    if payload.kind == "config_dir":
+        if not payload.config_dir:
+            return JSONResponse({"error": "config_dir is required when kind='config_dir'"}, status_code=400)
+        if payload.api_key_ref:
+            return JSONResponse({"error": "api_key_ref must be empty when kind='config_dir'"}, status_code=400)
+    else:
+        if not payload.api_key_ref:
+            return JSONResponse({"error": "api_key_ref is required when kind='api_key'"}, status_code=400)
+        if payload.config_dir:
+            return JSONResponse({"error": "config_dir must be empty when kind='api_key'"}, status_code=400)
+        try:
+            validate_secret_ref(payload.api_key_ref)
+        except ValueError as e:
+            return JSONResponse({"error": f"invalid api_key_ref: {e}"}, status_code=400)
+    db = get_db()
+    try:
+        acc = db.create_account(
+            name=payload.name,
+            kind=payload.kind,
+            config_dir=payload.config_dir,
+            api_key_ref=payload.api_key_ref,
+            plan_tier=payload.plan_tier,
+            is_default=payload.is_default,
+        )
+    except sqlite3.IntegrityError as e:
+        return JSONResponse({"error": str(e)}, status_code=409)
+    finally:
+        db.close()
+    return JSONResponse(_account_to_dict(acc), status_code=201)
+
+
+@router.get("/api/accounts/{account_id}")
+async def api_accounts_get(account_id: str):
+    db = get_db()
+    try:
+        acc = db.get_account(account_id)
+        if not acc:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(_account_to_dict(acc))
+    finally:
+        db.close()
+
+
+@router.patch("/api/accounts/{account_id}")
+async def api_accounts_update(account_id: str, payload: AccountUpdate):
+    fields = payload.model_dump(exclude_unset=True)
+    if fields.get("api_key_ref"):
+        try:
+            validate_secret_ref(fields["api_key_ref"])
+        except ValueError as e:
+            return JSONResponse({"error": f"invalid api_key_ref: {e}"}, status_code=400)
+    db = get_db()
+    try:
+        if not db.get_account(account_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        acc = db.update_account(account_id, **fields)
+    except (ValueError, sqlite3.IntegrityError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    finally:
+        db.close()
+    return JSONResponse(_account_to_dict(acc))
+
+
+@router.delete("/api/accounts/{account_id}", status_code=204)
+async def api_accounts_delete(account_id: str):
+    db = get_db()
+    try:
+        if db.delete_account(account_id):
+            return JSONResponse(None, status_code=204)
+        return JSONResponse({"error": "not found"}, status_code=404)
+    finally:
+        db.close()
+
+
+@router.post("/api/accounts/{account_id}/default")
+async def api_accounts_set_default(account_id: str):
+    db = get_db()
+    try:
+        if not db.get_account(account_id):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse(_account_to_dict(db.set_default_account(account_id)))
     finally:
         db.close()
