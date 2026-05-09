@@ -5,21 +5,20 @@ import subprocess
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import ChoiceLoader, FileSystemLoader
 from pydantic import BaseModel, Field
 
 from server.config import TASKS_DIR, LOGS_DIR, DATA_DIR
 
 from claude_scheduler.core.db import Database
-from claude_scheduler.core.parser import find_tasks, parse_task
+from claude_scheduler.core.parser import find_tasks
 from claude_scheduler.core.secrets import validate_secret_ref
 
 router = APIRouter()
 SERVER_TEMPLATES = Path(__file__).parent.parent.parent / "server" / "templates"
 APP_TEMPLATES = Path(__file__).parent / "templates"
-
-from jinja2 import ChoiceLoader, FileSystemLoader
 _loader = ChoiceLoader([
     FileSystemLoader(str(APP_TEMPLATES)),
     FileSystemLoader(str(SERVER_TEMPLATES)),
@@ -291,7 +290,7 @@ async def run_task(slug: str):
     task, err = _find_task_by_slug(slug)
     if err:
         return HTMLResponse(
-            f'<span class="text-red-400">Task not found</span>',
+            '<span class="text-red-400">Task not found</span>',
             status_code=404,
         )
 
@@ -419,7 +418,6 @@ async def create_task(
 @router.post("/api/update-prompt/{slug}")
 async def update_prompt(slug: str, prompt: str = Form(...)):
     """Update the prompt in a .task file."""
-    import re
     task, err = _find_task_by_slug(slug)
     if err:
         return RedirectResponse(url="/scheduler/", status_code=303)
@@ -530,13 +528,6 @@ async def reject(approval_id: int):
     finally:
         db.close()
     return RedirectResponse(url="/scheduler/approvals", status_code=303)
-
-
-# ---------------------------------------------------------------------------
-# JSON API endpoints (for React SPA)
-# ---------------------------------------------------------------------------
-
-from fastapi.responses import JSONResponse
 
 
 def _task_to_dict(task, state=None):
@@ -810,6 +801,48 @@ async def api_accounts_create(payload: AccountCreate):
     finally:
         db.close()
     return JSONResponse(_account_to_dict(acc), status_code=201)
+
+
+@router.get("/api/accounts/check-name")
+async def api_accounts_check_name(name: str = ""):
+    name = (name or "").strip()
+    if not name:
+        return JSONResponse({"available": False, "reason": "name is required"})
+    db = get_db()
+    try:
+        existing = db.get_account_by_name(name)
+        return JSONResponse({
+            "available": existing is None,
+            "reason": "already taken" if existing else None,
+        })
+    finally:
+        db.close()
+
+
+@router.get("/api/accounts/check")
+async def api_accounts_check_credentials(config_dir: str = ""):
+    raw = (config_dir or "").strip()
+    if not raw:
+        return JSONResponse({
+            "dir_exists": False,
+            "has_credentials": False,
+            "expanded_path": "",
+        })
+    try:
+        expanded = Path(raw).expanduser()
+        dir_exists = expanded.is_dir()
+        has_credentials = (expanded / ".credentials.json").is_file() if dir_exists else False
+        return JSONResponse({
+            "dir_exists": dir_exists,
+            "has_credentials": has_credentials,
+            "expanded_path": str(expanded),
+        })
+    except (OSError, RuntimeError, ValueError):
+        return JSONResponse({
+            "dir_exists": False,
+            "has_credentials": False,
+            "expanded_path": "",
+        })
 
 
 @router.get("/api/accounts/{account_id}")

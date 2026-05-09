@@ -3,6 +3,8 @@ import type {
   TaskKind,
   Account,
   AccountCreatePayload,
+  AccountCredentialCheck,
+  AccountNameCheck,
   RunRecord,
   ErrorRecord,
   SchedulerStats,
@@ -110,6 +112,18 @@ export const schedulerApi = {
       const body = await res.json().catch(() => ({ error: res.statusText }))
       throw new Error(body.error || `HTTP ${res.status}`)
     }
+    return res.json()
+  },
+
+  checkAccountName: async (name: string): Promise<AccountNameCheck> => {
+    const res = await fetch(`${BASE}/accounts/check-name?name=${encodeURIComponent(name)}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  },
+
+  checkAccountCredentials: async (configDir: string): Promise<AccountCredentialCheck> => {
+    const res = await fetch(`${BASE}/accounts/check?config_dir=${encodeURIComponent(configDir)}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
     return res.json()
   },
 

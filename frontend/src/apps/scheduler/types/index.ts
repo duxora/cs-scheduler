@@ -41,6 +41,14 @@ export interface AccountCreatePayload {
   is_default?: boolean
 }
 
+export type AccountNameCheck = { available: boolean; reason?: string }
+
+export type AccountCredentialCheck = {
+  dir_exists: boolean
+  has_credentials: boolean
+  expanded_path: string
+}
+
 export interface RunRecord {
   id: number
   task_name: string
