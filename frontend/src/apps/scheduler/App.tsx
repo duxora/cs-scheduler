@@ -9,11 +9,6 @@ import DoctorPage from './pages/DoctorPage'
 import ApprovalsPage from './pages/ApprovalsPage'
 import TaskDetailPage from './pages/TaskDetailPage'
 import TaskNewPage from './pages/TaskNewPage'
-import SettingsLayout from './pages/settings/SettingsLayout'
-import AccountsTab from './pages/settings/AccountsTab'
-import NotificationsTab from './pages/settings/NotificationsTab'
-import DefaultsTab from './pages/settings/DefaultsTab'
-import BudgetsTab from './pages/settings/BudgetsTab'
 
 interface TabLinkProps {
   to: string
@@ -51,7 +46,6 @@ export default function SchedulerApp() {
         <TabLink to="/scheduler/notifications">Notifications</TabLink>
         <TabLink to="/scheduler/doctor">Doctor</TabLink>
         <TabLink to="/scheduler/approvals">Approvals</TabLink>
-        <TabLink to="/scheduler/settings">Settings</TabLink>
       </nav>
 
       {/* Sub-route content */}
@@ -64,14 +58,8 @@ export default function SchedulerApp() {
           <Route path="notifications" element={<NotificationsPage />} />
           <Route path="doctor" element={<DoctorPage />} />
           <Route path="approvals" element={<ApprovalsPage />} />
-          <Route path="accounts" element={<Navigate to="/scheduler/settings/accounts" replace />} />
-          <Route path="settings" element={<SettingsLayout />}>
-            <Route index element={<Navigate to="accounts" replace />} />
-            <Route path="accounts" element={<AccountsTab />} />
-            <Route path="notifications" element={<NotificationsTab />} />
-            <Route path="defaults" element={<DefaultsTab />} />
-            <Route path="budgets" element={<BudgetsTab />} />
-          </Route>
+          <Route path="accounts/*" element={<Navigate to="/accounts" replace />} />
+          <Route path="settings/*" element={<Navigate to="/accounts" replace />} />
           <Route path="tasks/new" element={<TaskNewPage />} />
           <Route path="tasks/:slug" element={<TaskDetailPage />} />
           <Route path="*" element={<Navigate to="/scheduler" replace />} />

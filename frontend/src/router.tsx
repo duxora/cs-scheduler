@@ -6,6 +6,7 @@ const WorkflowApp = lazy(() => import('./apps/workflow/App'))
 const TelegramApp = lazy(() => import('./apps/telegram/App'))
 const KBApp = lazy(() => import('./apps/kb/App'))
 const SchedulerApp = lazy(() => import('./apps/scheduler/App'))
+const AccountsApp = lazy(() => import('./apps/accounts/App'))
 const StatsApp = lazy(() => import('./apps/stats/App'))
 
 export const router = createBrowserRouter([
@@ -20,6 +21,10 @@ export const router = createBrowserRouter([
       {
         path: 'scheduler/*',
         element: <SchedulerApp />,
+      },
+      {
+        path: 'accounts/*',
+        element: <AccountsApp />,
       },
       {
         path: 'kb/*',

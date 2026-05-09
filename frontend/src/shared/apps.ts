@@ -25,6 +25,14 @@ export const HUB_APPS: HubApp[] = [
     migrated: true,
   },
   {
+    id: 'accounts',
+    name: 'Accounts',
+    icon: '🔑',
+    path: '/accounts',
+    description: 'Claude accounts shared across all hub tools',
+    migrated: true,
+  },
+  {
     id: 'kb',
     name: 'Knowledge Base',
     icon: '📚',

@@ -6,6 +6,7 @@ import { relativeTime } from '../lib/relativeTime'
 import type { Account, AccountHealth } from '../types'
 
 type AccountKind = 'config_dir' | 'api_key'
+type NameStatus = 'idle' | 'checking' | 'available' | 'taken' | 'unreachable'
 
 type NewAccountForm = {
   name: string
@@ -51,7 +52,7 @@ export default function AccountsPage() {
   const { accounts, loading, error, refresh } = useAccounts()
   const [showModal, setShowModal] = useState(false)
   const [step, setStep] = useState<1 | 2>(1)
-  const [nameStatus, setNameStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle')
+  const [nameStatus, setNameStatus] = useState<NameStatus>('idle')
   const [verifyStatus, setVerifyStatus] = useState<'idle' | 'polling' | 'ready' | 'timeout'>('idle')
   const [verifyExpanded, setVerifyExpanded] = useState('')
   const [configDirManuallyEdited, setConfigDirManuallyEdited] = useState(false)
@@ -117,7 +118,7 @@ export default function AccountsPage() {
         const result = await schedulerApi.checkAccountName(trimmedName)
         if (!cancelled) setNameStatus(result.available ? 'available' : 'taken')
       } catch {
-        if (!cancelled) setNameStatus('idle')
+        if (!cancelled) setNameStatus('unreachable')
       }
     }, 400)
 
@@ -516,7 +517,13 @@ export default function AccountsPage() {
                               : 'text-red-400'
                         }`}
                       >
-                        {nameStatus === 'checking' ? 'checking...' : nameStatus === 'available' ? 'available' : 'taken'}
+                        {nameStatus === 'checking'
+                          ? 'checking...'
+                          : nameStatus === 'available'
+                            ? 'available'
+                            : nameStatus === 'taken'
+                              ? 'taken'
+                              : 'unreachable — restart server?'}
                       </span>
                     )}
                   </div>
