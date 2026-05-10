@@ -2,6 +2,10 @@
 """cs — Claude Scheduler CLI."""
 import argcomplete
 import argparse
+import hashlib
+import os
+import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +27,41 @@ def get_db():
     cfg = get_config()
     cfg.paths.data_dir.mkdir(parents=True, exist_ok=True)
     return Database(cfg.paths.data_dir / "scheduler.db")
+
+
+def _normalized_config_dir(config_dir: str | None) -> str | None:
+    if not config_dir:
+        return None
+    try:
+        return str(Path(config_dir).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _has_claude_credentials(config_dir: Path) -> bool:
+    cred_file = config_dir / ".credentials.json"
+    if cred_file.is_file():
+        return True
+
+    if sys.platform != "darwin":
+        return False
+
+    abs_path = config_dir.resolve()
+    home_claude = os.path.expanduser("~/.claude")
+    if str(abs_path) == home_claude:
+        service = "Claude Code-credentials"
+    else:
+        service = f"Claude Code-credentials-{hashlib.sha256(str(abs_path).encode()).hexdigest()[:8]}"
+
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
 
 
 # ── Init ──
@@ -772,6 +811,65 @@ def cmd_accounts_list(args):
     console.print(t)
 
 
+def cmd_accounts_discover(args):
+    home = Path.home()
+    candidates = [home / ".claude", home / ".claude-fleet"]
+    profiles_root = home / ".claude-profiles"
+    if profiles_root.exists():
+        candidates.extend(sorted(child for child in profiles_root.iterdir() if child.is_dir()))
+
+    db = get_db()
+    try:
+        accounts = db.list_accounts()
+    finally:
+        db.close()
+
+    seen: set[str] = set()
+    rows = []
+    for candidate in candidates:
+        try:
+            expanded = candidate.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        config_dir = str(expanded)
+        if config_dir in seen:
+            continue
+        seen.add(config_dir)
+
+        dir_exists = expanded.is_dir()
+        has_credentials = _has_claude_credentials(expanded) if dir_exists else False
+        registered_as = "-"
+        for account in accounts:
+            account_dir = _normalized_config_dir(account.config_dir)
+            if account_dir and account_dir == config_dir:
+                registered_as = account.name
+                break
+
+        rows.append({
+            "name_suggestion": expanded.name.lstrip(".").lower(),
+            "config_dir": config_dir,
+            "dir_exists": "yes" if dir_exists else "no",
+            "has_credentials": "yes" if has_credentials else "no",
+            "registered_as": registered_as,
+        })
+
+    t = Table(title="Claude config dirs")
+    t.add_column("name_suggestion")
+    t.add_column("config_dir")
+    t.add_column("dir_exists")
+    t.add_column("has_credentials")
+    t.add_column("registered_as")
+    for row in rows:
+        t.add_row(
+            row["name_suggestion"],
+            row["config_dir"],
+            row["dir_exists"],
+            row["has_credentials"],
+            row["registered_as"],
+        )
+    console.print(t)
+
+
 def cmd_accounts_add(args):
     import os
     import subprocess
@@ -825,6 +923,44 @@ def cmd_accounts_add(args):
     console.print(f"[green]Created account '{acct.name}' ({acct.kind})[/green]")
     if acct.is_default:
         console.print("  [dim]Set as default.[/dim]")
+
+
+def cmd_accounts_import(args):
+    db = get_db()
+    try:
+        try:
+            expanded = Path(args.config_dir).expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            console.print("[red]config_dir does not exist[/red]")
+            sys.exit(1)
+
+        if not expanded.is_dir():
+            console.print("[red]config_dir does not exist[/red]")
+            sys.exit(1)
+        if not args.skip_credentials_check and not _has_claude_credentials(expanded):
+            console.print("[red]no Claude credentials found for this dir; run `claude /login` with CLAUDE_CONFIG_DIR=<dir> first, or pass skip_credentials_check=true[/red]")
+            sys.exit(1)
+
+        for account in db.list_accounts():
+            account_dir = _normalized_config_dir(account.config_dir)
+            if account_dir == str(expanded):
+                console.print(f"[red]config_dir already registered as {account.name}[/red]")
+                sys.exit(1)
+        try:
+            acct = db.create_account(
+                args.name,
+                "config_dir",
+                config_dir=str(expanded),
+                plan_tier=args.plan_tier,
+                is_default=args.default,
+            )
+        except sqlite3.IntegrityError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+    finally:
+        db.close()
+
+    console.print(f"[green]Imported[/green] id={acct.id} name={acct.name}")
 
 
 def cmd_accounts_remove(args):
@@ -960,6 +1096,17 @@ def main():
     p.add_argument("name")
     p.add_argument("--force", "-f", action="store_true")
     p.set_defaults(func=cmd_accounts_remove)
+
+    p = acc_sub.add_parser("discover", help="Discover importable config dirs")
+    p.set_defaults(func=cmd_accounts_discover)
+
+    p = acc_sub.add_parser("import", help="Import an existing config dir")
+    p.add_argument("name")
+    p.add_argument("--config-dir", required=True, help="Existing Claude config dir")
+    p.add_argument("--plan-tier", choices=["pro", "max", "team", "api"])
+    p.add_argument("--default", action="store_true", help="Set as default account")
+    p.add_argument("--no-credentials-check", dest="skip_credentials_check", action="store_true", help="Import even if no credentials are detected")
+    p.set_defaults(func=cmd_accounts_import)
 
     p = acc_sub.add_parser("set-default", help="Set the default account")
     p.add_argument("name")

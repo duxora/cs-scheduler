@@ -54,6 +54,28 @@ export interface AccountCreatePayload {
   is_default?: boolean
 }
 
+export interface AccountDiscoverCandidate {
+  config_dir: string
+  name_suggestion: string
+  dir_exists: boolean
+  has_credentials: boolean
+  has_history: boolean
+  already_registered: boolean
+  registered_account_id: string | null
+}
+
+export interface AccountDiscoverResponse {
+  candidates: AccountDiscoverCandidate[]
+}
+
+export interface AccountImportPayload {
+  name: string
+  config_dir: string
+  plan_tier?: string | null
+  is_default?: boolean
+  skip_credentials_check?: boolean
+}
+
 export type AccountNameCheck = { available: boolean; reason?: string }
 
 export type AccountCredentialCheck = {

@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom'
 import { useAccounts } from '../hooks/useAccounts'
 import { schedulerApi } from '../lib/api'
 import { relativeTime } from '../lib/relativeTime'
-import type { Account, AccountHealth } from '../types'
+import type { Account, AccountDiscoverCandidate, AccountHealth, AccountImportPayload } from '../types'
 
 type AccountKind = 'config_dir' | 'api_key'
 type NameStatus = 'idle' | 'checking' | 'available' | 'taken' | 'unreachable'
+type ImportPlanTier = 'pro' | 'max5x' | 'max20x' | ''
 
 type NewAccountForm = {
   name: string
@@ -18,6 +19,7 @@ type NewAccountForm = {
 }
 
 const CONFIG_DIR_PLAN_OPTIONS = ['', 'pro', 'max', 'team']
+const IMPORT_PLAN_OPTIONS: ImportPlanTier[] = ['', 'pro', 'max5x', 'max20x']
 
 const HEALTH_PILL: Record<AccountHealth, { label: string; cls: string }> = {
   active: { label: '● Active', cls: 'bg-green-900/40 text-green-300' },
@@ -36,6 +38,10 @@ function deriveConfigDir(name: string) {
   return slug ? `~/.claude-profiles/${slug}` : '~/.claude-profiles'
 }
 
+function getDirBasename(configDir: string) {
+  return configDir.split(/[\\/]/).filter(Boolean).pop() || configDir
+}
+
 function defaultForm(kind: AccountKind = 'config_dir'): NewAccountForm {
   return {
     name: '',
@@ -51,6 +57,7 @@ export default function AccountsPage() {
   const navigate = useNavigate()
   const { accounts, loading, error, refresh } = useAccounts()
   const [showModal, setShowModal] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [step, setStep] = useState<1 | 2>(1)
   const [nameStatus, setNameStatus] = useState<NameStatus>('idle')
   const [verifyStatus, setVerifyStatus] = useState<'idle' | 'polling' | 'ready' | 'timeout'>('idle')
@@ -58,12 +65,22 @@ export default function AccountsPage() {
   const [configDirManuallyEdited, setConfigDirManuallyEdited] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [discover, setDiscover] = useState<AccountDiscoverCandidate[] | null>(null)
+  const [discoverLoading, setDiscoverLoading] = useState(false)
+  const [discoverError, setDiscoverError] = useState<string | null>(null)
+  const [picked, setPicked] = useState<AccountDiscoverCandidate | null>(null)
+  const [importName, setImportName] = useState('')
+  const [importPlanTier, setImportPlanTier] = useState<ImportPlanTier>('max20x')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importError, setImportError] = useState<string | null>(null)
+  const [skipCredentialsCheck, setSkipCredentialsCheck] = useState(false)
   const [testStatus, setTestStatus] = useState<
     Record<string, { state: 'idle' | 'running' | 'ok' | 'fail'; message?: string }>
   >({})
   const [form, setForm] = useState<NewAccountForm>(defaultForm())
   const verifyAbortRef = useRef<AbortController | null>(null)
   const statusTimeoutsRef = useRef<Record<string, number>>({})
+  const discoverRequestRef = useRef(0)
 
   function openModal(kind: AccountKind = 'config_dir') {
     setForm(defaultForm(kind))
@@ -92,6 +109,52 @@ export default function AccountsPage() {
     setShowModal(false)
   }
 
+  function resetImportModalState() {
+    setPicked(null)
+    setDiscover(null)
+    setDiscoverLoading(false)
+    setDiscoverError(null)
+    setImportName('')
+    setImportPlanTier('max20x')
+    setImportBusy(false)
+    setImportError(null)
+    setSkipCredentialsCheck(false)
+  }
+
+  function closeImportModal() {
+    discoverRequestRef.current += 1
+    resetImportModalState()
+    setShowImport(false)
+  }
+
+  function openImportModal() {
+    const requestId = ++discoverRequestRef.current
+    setShowImport(true)
+    setPicked(null)
+    setDiscover([])
+    setDiscoverLoading(true)
+    setDiscoverError(null)
+    setImportName('')
+    setImportPlanTier('max20x')
+    setImportBusy(false)
+    setImportError(null)
+    setSkipCredentialsCheck(false)
+
+    void (async () => {
+      try {
+        const result = await schedulerApi.discoverAccounts()
+        if (discoverRequestRef.current !== requestId) return
+        setDiscover(result.candidates)
+      } catch (err) {
+        if (discoverRequestRef.current !== requestId) return
+        setDiscoverError(err instanceof Error ? err.message : 'Unknown error')
+        setDiscover([])
+      }
+      if (discoverRequestRef.current !== requestId) return
+      setDiscoverLoading(false)
+    })()
+  }
+
   function switchKind(kind: AccountKind) {
     setForm((prev) => ({ ...defaultForm(kind), name: prev.name, is_default: prev.is_default }))
     resetModalState()
@@ -100,6 +163,42 @@ export default function AccountsPage() {
 
   function setField<K extends keyof NewAccountForm>(key: K, value: NewAccountForm[K]) {
     setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  function pickImportCandidate(candidate: AccountDiscoverCandidate) {
+    setPicked(candidate)
+    setImportName(candidate.name_suggestion)
+    setImportError(null)
+    setImportPlanTier('max20x')
+    setSkipCredentialsCheck(!candidate.has_credentials)
+  }
+
+  async function handleImportAccount() {
+    if (!picked) return
+    const name = importName.trim()
+    if (!name) {
+      setImportError('Name is required')
+      return
+    }
+
+    const payload: AccountImportPayload = {
+      name,
+      config_dir: picked.config_dir,
+      plan_tier: importPlanTier || null,
+      skip_credentials_check: skipCredentialsCheck,
+    }
+
+    setImportBusy(true)
+    setImportError(null)
+    try {
+      await schedulerApi.importAccount(payload)
+      closeImportModal()
+      await refresh()
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setImportBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -347,12 +446,21 @@ export default function AccountsPage() {
           <span className="text-gray-700">/</span>
           <h1 className="text-sm font-medium text-gray-200">Accounts</h1>
         </div>
-        <button
-          onClick={() => openModal('config_dir')}
-          className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition-colors"
-        >
-          + New account
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={openImportModal}
+            className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-1.5 rounded transition-colors"
+          >
+            Import existing
+          </button>
+          <button
+            onClick={() => openModal('config_dir')}
+            className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-3 py-1.5 rounded transition-colors"
+          >
+            + New account
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 px-4 py-4 overflow-y-auto">
@@ -702,6 +810,207 @@ export default function AccountsPage() {
                 )}
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showImport && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-[1px] flex items-center justify-center p-4">
+          <div className="w-full max-w-2xl bg-gray-950 border border-gray-800 rounded-lg shadow-2xl">
+            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-800">
+              <h2 className="text-sm font-medium text-gray-200">Import existing Claude account</h2>
+              <button
+                type="button"
+                onClick={closeImportModal}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-4 space-y-4">
+              {importError && (
+                <div className="text-xs text-red-400 bg-red-950 border border-red-900 rounded px-3 py-2">
+                  {importError}
+                </div>
+              )}
+
+              {picked === null ? (
+                <div className="space-y-3">
+                  {discoverLoading ? (
+                    <div className="flex items-center justify-center py-10">
+                      <span className="text-xs text-gray-500">Scanning…</span>
+                    </div>
+                  ) : discoverError ? (
+                    <div className="text-xs text-red-400">{discoverError}</div>
+                  ) : discover && discover.length === 0 ? (
+                    <div className="text-xs text-gray-500">
+                      No candidate dirs found. Use + New account to create a fresh profile.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {discover?.map((candidate) => {
+                        const disabled = !candidate.dir_exists || candidate.already_registered
+                        return (
+                          <button
+                            key={candidate.config_dir}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => pickImportCandidate(candidate)}
+                            className={`w-full rounded border px-3 py-3 text-left transition-colors ${
+                              disabled
+                                ? 'border-gray-800 bg-gray-900/40 opacity-50 cursor-not-allowed'
+                                : 'border-gray-800 bg-gray-900/60 hover:border-gray-700 hover:bg-gray-900'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-xs font-medium text-gray-100">
+                                  {getDirBasename(candidate.config_dir)}
+                                </div>
+                                <div className="mt-1 truncate font-mono text-[11px] text-gray-500">
+                                  {candidate.config_dir}
+                                </div>
+                              </div>
+                              <div className="flex flex-wrap justify-end gap-1.5">
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                    candidate.dir_exists ? 'bg-green-900/40 text-green-300' : 'bg-red-900/40 text-red-300'
+                                  }`}
+                                >
+                                  <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full bg-current align-middle" />
+                                  dir
+                                </span>
+                                <span
+                                  className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                    candidate.has_credentials
+                                      ? 'bg-green-900/40 text-green-300'
+                                      : 'bg-gray-800 text-gray-400'
+                                  }`}
+                                >
+                                  {candidate.has_credentials ? 'creds' : 'no creds'}
+                                </span>
+                                {candidate.has_history && (
+                                  <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300">
+                                    history
+                                  </span>
+                                )}
+                                {candidate.already_registered && (
+                                  <span className="rounded bg-yellow-900/40 px-1.5 py-0.5 text-[10px] text-yellow-300">
+                                    already registered
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded border border-gray-800 bg-gray-900/60 px-3 py-2">
+                    <div className="text-[11px] text-gray-500">Selected directory</div>
+                    <div className="mt-1 truncate font-mono text-[11px] text-gray-200">{picked.config_dir}</div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1 flex items-center justify-between gap-2">
+                      <label className="block text-xs text-gray-400" htmlFor="import-account-name">
+                        Name *
+                      </label>
+                    </div>
+                    <input
+                      id="import-account-name"
+                      type="text"
+                      value={importName}
+                      onChange={(e) => setImportName(e.target.value)}
+                      placeholder="My Claude profile"
+                      className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-gray-200 focus:border-blue-600 focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="mb-1 text-xs text-gray-400">Plan tier</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {IMPORT_PLAN_OPTIONS.map((tier) => (
+                        <button
+                          key={tier || 'none'}
+                          type="button"
+                          onClick={() => setImportPlanTier(tier)}
+                          className={`text-[10px] px-2 py-0.5 rounded border transition-colors ${
+                            importPlanTier === tier
+                              ? 'bg-gray-800 text-gray-100 border-gray-700'
+                              : 'bg-gray-950 text-gray-500 border-gray-800 hover:text-gray-300'
+                          }`}
+                        >
+                          {tier || '—'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="flex items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={skipCredentialsCheck}
+                        disabled={!picked.has_credentials}
+                        onChange={(e) => setSkipCredentialsCheck(e.target.checked)}
+                        className="mt-0.5 h-3.5 w-3.5 rounded border-gray-700 bg-gray-900 text-blue-600 focus:ring-0 focus:ring-offset-0 disabled:opacity-60"
+                      />
+                      <span className="text-xs text-gray-400">Skip credentials check</span>
+                    </label>
+                    <p className="text-[11px] text-gray-500">
+                      {picked.has_credentials
+                        ? 'Enable this only if you want to skip the post-import credential validation.'
+                        : 'Credentials were not detected, so this is enabled automatically.'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-1">
+                {picked === null ? (
+                  <button
+                    type="button"
+                    onClick={closeImportModal}
+                    className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded border border-gray-700 transition-colors"
+                  >
+                    Cancel
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPicked(null)
+                        setImportError(null)
+                      }}
+                      className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded border border-gray-700 transition-colors"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={closeImportModal}
+                      className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded border border-gray-700 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleImportAccount()}
+                      disabled={!importName.trim() || importBusy}
+                      className="text-xs bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded transition-colors disabled:opacity-50"
+                    >
+                      {importBusy ? 'Importing…' : 'Import'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

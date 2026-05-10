@@ -3,6 +3,8 @@ import type {
   TaskKind,
   Account,
   AccountCreatePayload,
+  AccountDiscoverResponse,
+  AccountImportPayload,
   AccountCredentialCheck,
   AccountNameCheck,
   AccountTestResult,
@@ -105,6 +107,25 @@ export const schedulerApi = {
 
   createAccount: async (payload: AccountCreatePayload): Promise<Account> => {
     const res = await fetch(`${BASE}/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({ error: res.statusText }))
+      throw new Error(body.error || `HTTP ${res.status}`)
+    }
+    return res.json()
+  },
+
+  discoverAccounts: async (): Promise<AccountDiscoverResponse> => {
+    const res = await fetch(`${BASE}/accounts/discover`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  },
+
+  importAccount: async (payload: AccountImportPayload): Promise<Account> => {
+    const res = await fetch(`${BASE}/accounts/import`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),

@@ -1,7 +1,10 @@
 """Scheduler web routes — dashboard, history, errors, tickets, and task management."""
+import hashlib
+import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Form, HTTPException, Query, Request
@@ -52,6 +55,41 @@ def _find_task_by_slug(slug: str):
         if t.slug == slug:
             return t, None
     return None, f"Task '{slug}' not found"
+
+
+def _normalized_config_dir(config_dir: str | None) -> str | None:
+    if not config_dir:
+        return None
+    try:
+        return str(Path(config_dir).expanduser().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _has_claude_credentials(config_dir: Path) -> bool:
+    cred_file = config_dir / ".credentials.json"
+    if cred_file.is_file():
+        return True
+
+    if sys.platform != "darwin":
+        return False
+
+    abs_path = config_dir.resolve()
+    home_claude = os.path.expanduser("~/.claude")
+    if str(abs_path) == home_claude:
+        service = "Claude Code-credentials"
+    else:
+        service = f"Claude Code-credentials-{hashlib.sha256(str(abs_path).encode()).hexdigest()[:8]}"
+
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -745,6 +783,14 @@ class AccountUpdate(BaseModel):
     plan_tier: str | None = None
 
 
+class AccountImport(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    config_dir: str = Field(min_length=1)
+    plan_tier: str | None = None
+    is_default: bool = False
+    skip_credentials_check: bool = False
+
+
 def _account_to_dict(a, db=None) -> dict:
     base = {
         "id": a.id,
@@ -890,7 +936,7 @@ async def api_accounts_check_credentials(config_dir: str = ""):
     try:
         expanded = Path(raw).expanduser()
         dir_exists = expanded.is_dir()
-        has_credentials = (expanded / ".credentials.json").is_file() if dir_exists else False
+        has_credentials = _has_claude_credentials(expanded)
         return JSONResponse({
             "dir_exists": dir_exists,
             "has_credentials": has_credentials,
@@ -902,6 +948,98 @@ async def api_accounts_check_credentials(config_dir: str = ""):
             "has_credentials": False,
             "expanded_path": "",
         })
+
+
+@router.get("/api/accounts/discover")
+async def api_accounts_discover():
+    home = Path.home()
+    candidates = [home / ".claude", home / ".claude-fleet"]
+    profiles_root = home / ".claude-profiles"
+    if profiles_root.exists():
+        candidates.extend(sorted(child for child in profiles_root.iterdir() if child.is_dir()))
+
+    db = get_db()
+    try:
+        accounts = db.list_accounts()
+    finally:
+        db.close()
+
+    seen: set[str] = set()
+    rows = []
+    for candidate in candidates:
+        try:
+            expanded = candidate.expanduser().resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        config_dir = str(expanded)
+        if config_dir in seen:
+            continue
+        seen.add(config_dir)
+
+        dir_exists = expanded.is_dir()
+        has_credentials = _has_claude_credentials(expanded) if dir_exists else False
+        has_history = False
+        if dir_exists:
+            has_history = (expanded / ".claude.json").is_file() or (expanded / "history.jsonl").is_file()
+
+        registered_account_id = None
+        already_registered = False
+        for account in accounts:
+            account_dir = _normalized_config_dir(account.config_dir)
+            if account_dir and account_dir == config_dir:
+                already_registered = True
+                registered_account_id = account.id
+                break
+
+        rows.append({
+            "config_dir": config_dir,
+            "name_suggestion": expanded.name.lstrip(".").lower(),
+            "dir_exists": dir_exists,
+            "has_credentials": has_credentials,
+            "has_history": has_history,
+            "already_registered": already_registered,
+            "registered_account_id": registered_account_id,
+        })
+
+    return JSONResponse({"candidates": rows})
+
+
+@router.post("/api/accounts/import", status_code=201)
+async def api_accounts_import(payload: AccountImport):
+    try:
+        expanded = Path(payload.config_dir).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return JSONResponse({"error": "config_dir does not exist"}, status_code=400)
+
+    if not expanded.is_dir():
+        return JSONResponse({"error": "config_dir does not exist"}, status_code=400)
+    if not payload.skip_credentials_check and not _has_claude_credentials(expanded):
+        return JSONResponse({
+            "error": "no Claude credentials found for this dir; run `claude /login` with CLAUDE_CONFIG_DIR=<dir> first, or pass skip_credentials_check=true",
+        }, status_code=400)
+
+    db = get_db()
+    try:
+        for acc in db.list_accounts():
+            account_dir = _normalized_config_dir(acc.config_dir)
+            if account_dir == str(expanded):
+                return JSONResponse({
+                    "error": f"config_dir already registered as {acc.name}",
+                }, status_code=409)
+        try:
+            acc = db.create_account(
+                name=payload.name,
+                kind="config_dir",
+                config_dir=str(expanded),
+                plan_tier=payload.plan_tier,
+                is_default=payload.is_default,
+            )
+        except sqlite3.IntegrityError as e:
+            return JSONResponse({"error": str(e)}, status_code=409)
+    finally:
+        db.close()
+
+    return JSONResponse(_account_to_dict(acc), status_code=201)
 
 
 @router.get("/api/accounts/{account_id}")
