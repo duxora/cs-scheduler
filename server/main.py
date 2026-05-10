@@ -77,6 +77,12 @@ async def serve_stats_spa(path: str = ""):
     return FileResponse(str(_SPA_INDEX))
 
 
+@app.get("/accounts", include_in_schema=False)
+@app.get("/accounts/{path:path}", include_in_schema=False)
+async def serve_accounts_spa(path: str = ""):
+    return FileResponse(str(_SPA_INDEX))
+
+
 # ── SPA catch-all ────────────────────────────────────────────────────────────
 
 if _SPA_DIST.exists():
