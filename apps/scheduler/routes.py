@@ -1,6 +1,7 @@
 """Scheduler web routes — dashboard, history, errors, tickets, and task management."""
 import hashlib
 import os
+import json
 import shutil
 import sqlite3
 import subprocess
@@ -1101,7 +1102,7 @@ async def api_accounts_test(account_id: str):
     import os
     import time as _time
     from claude_scheduler.core.secrets import resolve_secret_ref, SecretResolutionError
-    from claude_scheduler.core.executor import _find_claude
+    from claude_scheduler.core.executor import _find_claude, augment_path
 
     db = get_db()
     try:
@@ -1120,7 +1121,7 @@ async def api_accounts_test(account_id: str):
             "took_ms": 0,
         }, status_code=200)
 
-    env = os.environ.copy()
+    env = augment_path(os.environ.copy())
     if acc.kind == "config_dir":
         if not acc.config_dir:
             return JSONResponse({
@@ -1129,7 +1130,15 @@ async def api_accounts_test(account_id: str):
                 "stderr_tail": "account has no config_dir",
                 "took_ms": 0,
             }, status_code=200)
-        env["CLAUDE_CONFIG_DIR"] = acc.config_dir
+        # The default ~/.claude path uses the unsuffixed keychain entry,
+        # which is only consulted when CLAUDE_CONFIG_DIR is *unset*.
+        # Setting it explicitly to ~/.claude triggers the path-hashed lookup
+        # and the unsuffixed creds become invisible.
+        default_dir = os.path.expanduser("~/.claude")
+        if os.path.realpath(acc.config_dir) != os.path.realpath(default_dir):
+            env["CLAUDE_CONFIG_DIR"] = acc.config_dir
+        else:
+            env.pop("CLAUDE_CONFIG_DIR", None)
         env.pop("ANTHROPIC_API_KEY", None)
     else:
         if not acc.api_key_ref:
@@ -1164,9 +1173,23 @@ async def api_accounts_test(account_id: str):
 
     took_ms = int((_time.monotonic() - t0) * 1000)
     stderr = proc.stderr.decode(errors="replace") if proc.stderr else ""
+    stdout = proc.stdout.decode(errors="replace") if proc.stdout else ""
+    # Claude with --output-format json prints a single JSON envelope to stdout.
+    # If exit != 0 and stderr is empty, dig into the JSON for is_error / subtype.
+    summary = ""
+    if stdout:
+        try:
+            j = json.loads(stdout)
+            if j.get("is_error"):
+                summary = f"is_error=true subtype={j.get('subtype')!r} result={j.get('result','')[:200]!r}"
+            else:
+                summary = f"completed output_tokens={j.get('usage',{}).get('output_tokens',0)} terminal_reason={j.get('terminal_reason')}"
+        except (ValueError, TypeError):
+            summary = stdout[-300:]
+    tail = (stderr[-400:] if stderr else "") + (("\n" + summary) if summary else "")
     return JSONResponse({
         "ok": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "stderr_tail": stderr[-400:] if stderr else "",
+        "stderr_tail": tail.strip(),
         "took_ms": took_ms,
     })

@@ -32,6 +32,28 @@ def _find_claude() -> str:
     return "claude"  # fallback, will raise FileNotFoundError
 
 
+# Common user-level bin dirs that uvicorn / launchd processes often miss.
+# Without these, Claude CLI's node-based hooks fail with `node: command not found`.
+_COMMON_BIN_PATHS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    os.path.expanduser("~/.local/bin"),
+    os.path.expanduser("~/.claude/bin"),
+)
+
+
+def augment_path(env: dict) -> dict:
+    """Prepend common user bin dirs to env['PATH'] so spawned tools (node,
+    npm, claude) resolve when the parent process inherited a stripped PATH."""
+    current = env.get("PATH", "")
+    parts = current.split(":") if current else []
+    for p in _COMMON_BIN_PATHS:
+        if p and p not in parts and os.path.isdir(p):
+            parts.insert(0, p)
+    env["PATH"] = ":".join(parts)
+    return env
+
+
 def build_claude_command(task: Task) -> list[str]:
     return [
         _find_claude(), "-p", task.prompt,
@@ -248,9 +270,13 @@ def execute_task(task: Task, logs_dir: Path,
                     "session_id": "",
                 }
 
-            env = os.environ.copy()
+            env = augment_path(os.environ.copy())
             if account.kind == "config_dir":
-                env["CLAUDE_CONFIG_DIR"] = account.config_dir
+                default_dir = os.path.expanduser("~/.claude")
+                if os.path.realpath(account.config_dir) != os.path.realpath(default_dir):
+                    env["CLAUDE_CONFIG_DIR"] = account.config_dir
+                else:
+                    env.pop("CLAUDE_CONFIG_DIR", None)
                 env.pop("ANTHROPIC_API_KEY", None)
             elif account.kind == "api_key":
                 try:
