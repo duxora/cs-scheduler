@@ -1101,6 +1101,7 @@ async def api_accounts_test(account_id: str):
     import os
     import time as _time
     from claude_scheduler.core.secrets import resolve_secret_ref, SecretResolutionError
+    from claude_scheduler.core.executor import _find_claude
 
     db = get_db()
     try:
@@ -1110,12 +1111,12 @@ async def api_accounts_test(account_id: str):
     finally:
         db.close()
 
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
+    claude_bin = _find_claude()
+    if not claude_bin or not os.path.isfile(claude_bin):
         return JSONResponse({
             "ok": False,
             "exit_code": None,
-            "stderr_tail": "claude CLI not found in PATH",
+            "stderr_tail": "claude CLI not found (checked PATH, ~/.local/bin, ~/.claude/bin, /usr/local/bin)",
             "took_ms": 0,
         }, status_code=200)
 
