@@ -47,6 +47,10 @@ from apps.telegram_bridge.routes import router as tg_router
 register_app("Telegram Bridge", "Two-way Telegram bot with plugin system", "/telegram-bridge", "🤖")
 app.include_router(tg_router, prefix="/telegram-bridge")
 
+from apps.tkt_activator.routes import router as tkt_activator_router
+register_app("Tkt Activator", "Telegram callbacks for deferred/recurring tasks", "/tkt-activator", "⏰")
+app.include_router(tkt_activator_router, prefix="/tkt-activator")
+
 try:
     from apps.dev_workflow.routes import router as workflow_router
     register_app("Dev Workflow", "Dev-to-deploy pipeline dashboard", "/workflow", "🔄")
