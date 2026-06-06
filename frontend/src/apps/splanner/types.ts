@@ -1,6 +1,8 @@
 export type Context = 'work' | 'family' | 'personal'
 export type ObjectiveStatus = 'on_track' | 'at_risk' | 'blocked' | 'done'
 export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done'
+export type CheckinKind = 'win' | 'risk' | 'decision' | 'blocked' | 'note'
+export type CheckinSource = 'manual' | 'calendar' | 'tkt' | 'life-graph'
 
 export interface Project {
   id: number
@@ -43,8 +45,8 @@ export interface Checkin {
   objective_id: number | null
   item_id: number | null
   body: string
-  kind: string
-  source: string
+  kind: CheckinKind
+  source: CheckinSource
   source_ref: string | null
   ai_classified: boolean
   created_at: string
@@ -100,4 +102,12 @@ export interface UpdateItemPayload {
   eta?: string | null
   blockers?: string | null
   tkt_ticket_id?: number | null
+}
+
+export interface CreateCheckinPayload {
+  body: string
+  kind: CheckinKind
+  project_id?: number | null
+  objective_id?: number | null
+  item_id?: number | null
 }

@@ -248,3 +248,138 @@ def test_invalid_item_status_returns_422(client: TestClient):
     )
 
     assert response.status_code == 422
+
+
+def test_create_project_scoped_checkin_appears_in_project_filtered_stream(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+
+    created = client.post(
+        "/splanner/api/checkins",
+        json={
+            "project_id": project_id,
+            "body": "Closed the paging gap",
+            "kind": "win",
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["project_id"] == project_id
+    assert body["objective_id"] is None
+    assert body["item_id"] is None
+    assert body["source"] == "manual"
+    assert body["ai_classified"] is False
+
+    response = client.get(f"/splanner/api/checkins?project_id={project_id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == body["id"]
+    assert data[0]["kind"] == "win"
+
+
+def test_create_objective_scoped_checkin_derives_project_id(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project_id, "name": "Reduce incidents"},
+    )
+
+    created = client.post(
+        "/splanner/api/checkins",
+        json={
+            "objective_id": objective.json()["id"],
+            "body": "Risk review slipped",
+            "kind": "risk",
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["project_id"] == project_id
+    assert body["objective_id"] == objective.json()["id"]
+
+    response = client.get(f"/splanner/api/checkins?project_id={project_id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["id"] == body["id"]
+
+
+def test_create_checkin_with_two_link_ids_returns_400(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Reduce incidents"},
+    )
+
+    response = client.post(
+        "/splanner/api/checkins",
+        json={
+            "project_id": project.json()["id"],
+            "objective_id": objective.json()["id"],
+            "body": "Too many links",
+            "kind": "note",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_create_checkin_missing_target_returns_404(client: TestClient):
+    response = client.post(
+        "/splanner/api/checkins",
+        json={"objective_id": 99999, "body": "Missing objective", "kind": "blocked"},
+    )
+
+    assert response.status_code == 404
+
+
+def test_create_checkin_invalid_kind_returns_422(client: TestClient):
+    response = client.post(
+        "/splanner/api/checkins",
+        json={"body": "Bad kind", "kind": "unknown"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_list_checkins_filters_by_kind(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+    client.post(
+        "/splanner/api/checkins",
+        json={"project_id": project_id, "body": "Closed gap", "kind": "win"},
+    )
+    client.post(
+        "/splanner/api/checkins",
+        json={"project_id": project_id, "body": "Need more staffing", "kind": "risk"},
+    )
+
+    response = client.get("/splanner/api/checkins?kind=risk")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["kind"] == "risk"
+    assert data[0]["body"] == "Need more staffing"
+
+
+def test_list_checkins_filters_by_source(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+    client.post(
+        "/splanner/api/checkins",
+        json={"project_id": project_id, "body": "Manual update", "kind": "note"},
+    )
+
+    response = client.get("/splanner/api/checkins?source=manual")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 1
+    assert data[0]["source"] == "manual"

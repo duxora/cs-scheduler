@@ -26,6 +26,8 @@ class ProjectUpdate(BaseModel):
 
 ObjectiveStatus = Literal["on_track", "at_risk", "blocked", "done"]
 ItemStatus = Literal["todo", "doing", "blocked", "done"]
+CheckinKind = Literal["win", "risk", "decision", "blocked", "note"]
+CheckinSource = Literal["manual", "calendar", "tkt", "life-graph"]
 
 
 class ObjectiveCreate(BaseModel):
@@ -60,6 +62,14 @@ class ItemUpdate(BaseModel):
     eta: str | None = None
     blockers: str | None = None
     tkt_ticket_id: int | None = None
+
+
+class CheckinCreate(BaseModel):
+    body: str = Field(min_length=1)
+    kind: CheckinKind
+    project_id: int | None = None
+    objective_id: int | None = None
+    item_id: int | None = None
 
 
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
@@ -116,6 +126,46 @@ def _checkin_row_to_dict(row: sqlite3.Row) -> dict:
         "ai_classified": bool(row["ai_classified"]),
         "created_at": row["created_at"],
     }
+
+
+def _resolve_checkin_links(
+    db,
+    *,
+    project_id: int | None,
+    objective_id: int | None,
+    item_id: int | None,
+) -> tuple[int | None, int | None, int | None]:
+    link_ids = [link_id for link_id in (project_id, objective_id, item_id) if link_id is not None]
+    if len(link_ids) > 1:
+        raise HTTPException(status_code=400, detail="at most one link id may be set")
+
+    if project_id is not None:
+        project = db.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if project is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return project_id, None, None
+
+    if objective_id is not None:
+        objective = db.execute(
+            "SELECT id, project_id FROM objectives WHERE id = ?",
+            (objective_id,),
+        ).fetchone()
+        if objective is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return objective["project_id"], objective_id, None
+
+    if item_id is not None:
+        item = db.execute(
+            "SELECT items.id, objectives.project_id "
+            "FROM items JOIN objectives ON objectives.id = items.objective_id "
+            "WHERE items.id = ?",
+            (item_id,),
+        ).fetchone()
+        if item is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return item["project_id"], None, item_id
+
+    return None, None, None
 
 
 @router.get("/api/projects")
@@ -334,6 +384,64 @@ async def create_item(payload: ItemCreate):
             (cursor.lastrowid,),
         ).fetchone()
         return _item_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.get("/api/checkins")
+async def list_checkins(
+    project_id: int | None = Query(default=None),
+    kind: CheckinKind | None = Query(default=None),
+    source: CheckinSource | None = Query(default=None),
+):
+    db = get_db()
+    try:
+        sql = (
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at "
+            "FROM checkins WHERE (? IS NULL OR project_id = ?) "
+            "AND (? IS NULL OR kind = ?) "
+            "AND (? IS NULL OR source = ?) "
+            "ORDER BY created_at DESC, id DESC LIMIT 200"
+        )
+        rows = db.execute(
+            sql,
+            (project_id, project_id, kind, kind, source, source),
+        ).fetchall()
+        return [_checkin_row_to_dict(row) for row in rows]
+    finally:
+        db.close()
+
+
+@router.post("/api/checkins", status_code=201)
+async def create_checkin(payload: CheckinCreate):
+    db = get_db()
+    try:
+        resolved_project_id, resolved_objective_id, resolved_item_id = _resolve_checkin_links(
+            db,
+            project_id=payload.project_id,
+            objective_id=payload.objective_id,
+            item_id=payload.item_id,
+        )
+        cursor = db.execute(
+            "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, ai_classified) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                resolved_project_id,
+                resolved_objective_id,
+                resolved_item_id,
+                payload.body.strip(),
+                payload.kind,
+                "manual",
+                0,
+            ),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at "
+            "FROM checkins WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return _checkin_row_to_dict(row)
     finally:
         db.close()
 

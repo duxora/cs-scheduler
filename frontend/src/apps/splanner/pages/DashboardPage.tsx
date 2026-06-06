@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import CheckinComposer from '../components/CheckinComposer'
 import { splannerApi } from '../lib/api'
 import type { Context, Project } from '../types'
 
@@ -29,6 +30,7 @@ function formatContextLabel(context: Context): string {
 export default function DashboardPage() {
   const [selectedContext, setSelectedContext] = useState<ContextFilter>('all')
   const [projects, setProjects] = useState<Project[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
@@ -55,6 +57,11 @@ export default function DashboardPage() {
       setPriorityDrafts(
         Object.fromEntries(nextProjects.map((project) => [project.id, String(project.priority)])),
       )
+      setSelectedProjectId((prev) =>
+        prev !== null && nextProjects.some((project) => project.id === prev)
+          ? prev
+          : nextProjects[0]?.id ?? null,
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load projects.')
     } finally {
@@ -70,6 +77,11 @@ export default function DashboardPage() {
     if (isLoading) return 'Loading…'
     return `${projects.length} project${projects.length === 1 ? '' : 's'}`
   }, [isLoading, projects.length])
+
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId],
+  )
 
   async function handleCreateProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -131,6 +143,10 @@ export default function DashboardPage() {
     await updateProject(project.id, { archived: !project.archived }, `archive-${project.id}`)
   }
 
+  async function handleCheckinCreated() {
+    await loadProjects(selectedContext)
+  }
+
   return (
     <div className="flex min-h-full flex-col bg-gray-950 px-4 py-4 text-gray-100 overflow-y-auto">
       <div className="mb-6 flex flex-col gap-4 border-b border-gray-800 pb-4">
@@ -160,6 +176,48 @@ export default function DashboardPage() {
               </button>
             )
           })}
+        </div>
+
+        <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+          <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+            <div>
+              <h2 className="text-sm font-medium text-gray-100">Quick check-in</h2>
+              <p className="text-xs text-gray-500">Pick a project, then capture the latest signal.</p>
+            </div>
+            <div className="w-full md:w-72">
+              <label className="mb-1 block text-[11px] uppercase tracking-wide text-gray-500" htmlFor="dashboard-checkin-project">
+                Project
+              </label>
+              <select
+                id="dashboard-checkin-project"
+                value={selectedProjectId ?? ''}
+                onChange={(event) => setSelectedProjectId(Number.parseInt(event.target.value, 10))}
+                disabled={projects.length === 0}
+                className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {projects.length === 0 ? (
+                  <option value="">No projects available</option>
+                ) : (
+                  projects.map((project) => (
+                    <option key={project.id} value={project.id}>
+                      {project.name}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          </div>
+
+          {selectedProject ? (
+            <CheckinComposer
+              scope={{ projectId: selectedProject.id, label: selectedProject.name }}
+              onCreated={handleCheckinCreated}
+            />
+          ) : (
+            <div className="rounded-xl border border-dashed border-gray-800 px-3 py-6 text-center text-sm text-gray-500">
+              Create a project first to post a check-in.
+            </div>
+          )}
         </div>
 
         <form onSubmit={handleCreateProject} className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">

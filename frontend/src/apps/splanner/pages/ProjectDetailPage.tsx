@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
+import CheckinComposer, { type CheckinComposerScope } from '../components/CheckinComposer'
+import CheckinStream from '../components/CheckinStream'
 import { splannerApi } from '../lib/api'
 import type {
   Context,
@@ -66,6 +68,13 @@ function formatMetricLine(objective: Objective): string {
   return `${current} vs ${target}${unit}`
 }
 
+function buildProjectScope(detail: ProjectDetail): CheckinComposerScope {
+  return {
+    projectId: detail.project.id,
+    label: detail.project.name,
+  }
+}
+
 function formatDeadline(deadline: string | null): string {
   if (!deadline) return 'No deadline'
   const date = new Date(deadline)
@@ -97,6 +106,7 @@ export default function ProjectDetailPage() {
   const [showObjectiveForm, setShowObjectiveForm] = useState(false)
   const [objectiveForm, setObjectiveForm] = useState<ObjectiveFormState>(EMPTY_OBJECTIVE_FORM)
   const [itemForms, setItemForms] = useState<Record<number, ItemFormState>>({})
+  const [composerScope, setComposerScope] = useState<CheckinComposerScope | null>(null)
 
   async function loadProjectDetail(nextProjectId: number) {
     setIsLoading(true)
@@ -104,6 +114,9 @@ export default function ProjectDetailPage() {
     try {
       const nextDetail = await splannerApi.getProjectDetail(nextProjectId)
       setDetail(nextDetail)
+      setComposerScope((prev) =>
+        prev && prev.projectId === nextDetail.project.id ? prev : buildProjectScope(nextDetail),
+      )
       setExpandedObjectives((prev) => {
         const next = { ...prev }
         for (const objective of nextDetail.objectives) {
@@ -142,6 +155,16 @@ export default function ProjectDetailPage() {
 
   function toggleObjective(objectiveId: number) {
     setExpandedObjectives((prev) => ({ ...prev, [objectiveId]: !prev[objectiveId] }))
+  }
+
+  function setProjectComposerScope() {
+    if (!detail) return
+    setComposerScope(buildProjectScope(detail))
+  }
+
+  async function handleCheckinCreated() {
+    if (projectIdValue === null) return
+    await loadProjectDetail(projectIdValue)
   }
 
   async function handleCreateObjective(event: React.FormEvent<HTMLFormElement>) {
@@ -257,7 +280,7 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="min-h-full bg-gray-950 px-4 py-4 text-gray-100">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
         <Link to="/splanner" className="text-sm text-gray-500 transition-colors hover:text-gray-300">
           ← Back to SPlanner
         </Link>
@@ -348,132 +371,185 @@ export default function ProjectDetailPage() {
           </div>
         )}
 
-        <section className="grid gap-4">
-          {detail.objectives.length === 0 ? (
-            <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-gray-800 text-sm text-gray-500">
-              No objectives yet.
-            </div>
-          ) : (
-            detail.objectives.map((objective) => {
-              const isExpanded = expandedObjectives[objective.id] ?? true
-              const itemForm = itemForms[objective.id] ?? { name: '', eta: '' }
-              const createItemBusy = activeAction === `create-item-${objective.id}`
-              return (
-                <article key={objective.id} className="rounded-2xl border border-gray-800 bg-gray-900/70">
-                  <button
-                    type="button"
-                    onClick={() => toggleObjective(objective.id)}
-                    className="flex w-full items-start justify-between gap-4 px-5 py-4 text-left transition-colors hover:bg-gray-900/90"
-                  >
-                    <div className="min-w-0">
-                      <div className="mb-2 flex flex-wrap items-center gap-2">
-                        <h2 className="text-lg font-semibold text-gray-100">{objective.name}</h2>
-                        <StatusBadge status={objective.status} />
-                      </div>
-                      <p className="text-sm text-gray-400">
-                        {objective.metric ? `${objective.metric} · ` : ''}
-                        {formatMetricLine(objective)}
-                        {' · '}
-                        {formatDeadline(objective.deadline)}
-                      </p>
-                    </div>
-                    <span className="text-lg text-gray-500">{isExpanded ? '−' : '+'}</span>
-                  </button>
-
-                  {isExpanded && (
-                    <div className="border-t border-gray-800 px-5 py-4">
-                      <div className="mb-4 space-y-3">
-                        {objective.items.length === 0 ? (
-                          <p className="text-sm text-gray-500">No items yet.</p>
-                        ) : (
-                          objective.items.map((item) => {
-                            const itemBusy = activeAction === `item-status-${item.id}`
-                            return (
-                              <div
-                                key={item.id}
-                                className="rounded-xl border border-gray-800 bg-gray-950/70 px-4 py-3"
-                              >
-                                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                                  <div className="min-w-0">
-                                    <p className="text-sm font-medium text-gray-100">{item.name}</p>
-                                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                      <span className={ITEM_STATUS_STYLES[item.status]}>{item.status}</span>
-                                      {item.eta && <span>ETA {formatDeadline(item.eta)}</span>}
-                                    </div>
-                                    {item.blockers && (
-                                      <p className="mt-2 text-sm text-red-300">Blockers: {item.blockers}</p>
-                                    )}
-                                  </div>
-                                  <select
-                                    value={item.status}
-                                    onChange={(event) =>
-                                      void handleItemStatusChange(
-                                        objective.id,
-                                        item.id,
-                                        event.target.value as ItemStatus,
-                                      )}
-                                    disabled={itemBusy}
-                                    className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    <option value="todo">todo</option>
-                                    <option value="doing">doing</option>
-                                    <option value="blocked">blocked</option>
-                                    <option value="done">done</option>
-                                  </select>
-                                </div>
-                              </div>
-                            )
-                          })
-                        )}
-                      </div>
-
-                      <form
-                        onSubmit={(event) => void handleCreateItem(event, objective.id)}
-                        className="rounded-xl border border-gray-800 bg-gray-950/70 p-4"
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(320px,0.95fr)]">
+          <section className="grid gap-4">
+            {detail.objectives.length === 0 ? (
+              <div className="flex h-40 items-center justify-center rounded-2xl border border-dashed border-gray-800 text-sm text-gray-500">
+                No objectives yet.
+              </div>
+            ) : (
+              detail.objectives.map((objective) => {
+                const isExpanded = expandedObjectives[objective.id] ?? true
+                const itemForm = itemForms[objective.id] ?? { name: '', eta: '' }
+                const createItemBusy = activeAction === `create-item-${objective.id}`
+                return (
+                  <article key={objective.id} className="rounded-2xl border border-gray-800 bg-gray-900/70">
+                    <div className="flex items-start gap-3 px-5 py-4">
+                      <button
+                        type="button"
+                        onClick={() => toggleObjective(objective.id)}
+                        className="flex min-w-0 flex-1 items-start justify-between gap-4 text-left transition-colors hover:text-white"
                       >
-                        <div className="mb-3 flex items-center justify-between">
-                          <h3 className="text-sm font-medium text-gray-100">Add item</h3>
-                          <span className="text-xs text-gray-500">Name + ETA</span>
+                        <div className="min-w-0">
+                          <div className="mb-2 flex flex-wrap items-center gap-2">
+                            <h2 className="text-lg font-semibold text-gray-100">{objective.name}</h2>
+                            <StatusBadge status={objective.status} />
+                          </div>
+                          <p className="text-sm text-gray-400">
+                            {objective.metric ? `${objective.metric} · ` : ''}
+                            {formatMetricLine(objective)}
+                            {' · '}
+                            {formatDeadline(objective.deadline)}
+                          </p>
                         </div>
-                        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]">
-                          <input
-                            value={itemForm.name}
-                            onChange={(event) =>
-                              setItemForms((prev) => ({
-                                ...prev,
-                                [objective.id]: { ...itemForm, name: event.target.value },
-                              }))
-                            }
-                            placeholder="Draft the recovery checklist"
-                            className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:border-gray-500 focus:outline-none"
-                          />
-                          <input
-                            value={itemForm.eta}
-                            onChange={(event) =>
-                              setItemForms((prev) => ({
-                                ...prev,
-                                [objective.id]: { ...itemForm, eta: event.target.value },
-                              }))
-                            }
-                            type="date"
-                            className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none"
-                          />
-                          <button
-                            type="submit"
-                            disabled={createItemBusy}
-                            className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {createItemBusy ? 'Saving…' : 'Create item'}
-                          </button>
-                        </div>
-                      </form>
+                        <span className="text-lg text-gray-500">{isExpanded ? '−' : '+'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setComposerScope({
+                            projectId: detail.project.id,
+                            objectiveId: objective.id,
+                            label: objective.name,
+                          })
+                        }
+                        className="rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100"
+                      >
+                        check-in
+                      </button>
                     </div>
-                  )}
-                </article>
-              )
-            })
-          )}
-        </section>
+
+                    {isExpanded && (
+                      <div className="border-t border-gray-800 px-5 py-4">
+                        <div className="mb-4 space-y-3">
+                          {objective.items.length === 0 ? (
+                            <p className="text-sm text-gray-500">No items yet.</p>
+                          ) : (
+                            objective.items.map((item) => {
+                              const itemBusy = activeAction === `item-status-${item.id}`
+                              return (
+                                <div
+                                  key={item.id}
+                                  className="rounded-xl border border-gray-800 bg-gray-950/70 px-4 py-3"
+                                >
+                                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                    <div className="min-w-0">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <p className="text-sm font-medium text-gray-100">{item.name}</p>
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setComposerScope({
+                                              projectId: detail.project.id,
+                                              objectiveId: objective.id,
+                                              itemId: item.id,
+                                              label: `${objective.name} / ${item.name}`,
+                                            })
+                                          }
+                                          className="rounded-full border border-gray-700 bg-gray-900 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100"
+                                        >
+                                          check-in
+                                        </button>
+                                      </div>
+                                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                        <span className={ITEM_STATUS_STYLES[item.status]}>{item.status}</span>
+                                        {item.eta && <span>ETA {formatDeadline(item.eta)}</span>}
+                                      </div>
+                                      {item.blockers && (
+                                        <p className="mt-2 text-sm text-red-300">Blockers: {item.blockers}</p>
+                                      )}
+                                    </div>
+                                    <select
+                                      value={item.status}
+                                      onChange={(event) =>
+                                        void handleItemStatusChange(
+                                          objective.id,
+                                          item.id,
+                                          event.target.value as ItemStatus,
+                                        )}
+                                      disabled={itemBusy}
+                                      className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      <option value="todo">todo</option>
+                                      <option value="doing">doing</option>
+                                      <option value="blocked">blocked</option>
+                                      <option value="done">done</option>
+                                    </select>
+                                  </div>
+                                </div>
+                              )
+                            })
+                          )}
+                        </div>
+
+                        <form
+                          onSubmit={(event) => void handleCreateItem(event, objective.id)}
+                          className="rounded-xl border border-gray-800 bg-gray-950/70 p-4"
+                        >
+                          <div className="mb-3 flex items-center justify-between">
+                            <h3 className="text-sm font-medium text-gray-100">Add item</h3>
+                            <span className="text-xs text-gray-500">Name + ETA</span>
+                          </div>
+                          <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_auto]">
+                            <input
+                              value={itemForm.name}
+                              onChange={(event) =>
+                                setItemForms((prev) => ({
+                                  ...prev,
+                                  [objective.id]: { ...itemForm, name: event.target.value },
+                                }))
+                              }
+                              placeholder="Draft the recovery checklist"
+                              className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:border-gray-500 focus:outline-none"
+                            />
+                            <input
+                              value={itemForm.eta}
+                              onChange={(event) =>
+                                setItemForms((prev) => ({
+                                  ...prev,
+                                  [objective.id]: { ...itemForm, eta: event.target.value },
+                                }))
+                              }
+                              type="date"
+                              className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none"
+                            />
+                            <button
+                              type="submit"
+                              disabled={createItemBusy}
+                              className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {createItemBusy ? 'Saving…' : 'Create item'}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    )}
+                  </article>
+                )
+              })
+            )}
+          </section>
+
+          <aside className="grid gap-4 self-start xl:sticky xl:top-4">
+            {composerScope && (
+              <CheckinComposer scope={composerScope} onCreated={handleCheckinCreated} />
+            )}
+            <div className="flex items-center justify-between rounded-xl border border-gray-800 bg-gray-900/70 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-100">Current stream scope</p>
+                <p className="text-xs text-gray-500">{composerScope?.label ?? detail.project.name}</p>
+              </div>
+              <button
+                type="button"
+                onClick={setProjectComposerScope}
+                className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100"
+              >
+                Project scope
+              </button>
+            </div>
+            <CheckinStream checkins={detail.checkins} refetch={handleCheckinCreated} />
+          </aside>
+        </div>
       </div>
     </div>
   )

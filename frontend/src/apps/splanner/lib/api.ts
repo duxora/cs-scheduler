@@ -1,5 +1,9 @@
 import type {
+  Checkin,
+  CheckinKind,
+  CheckinSource,
   Context,
+  CreateCheckinPayload,
   CreateItemPayload,
   CreateObjectivePayload,
   CreateProjectPayload,
@@ -79,6 +83,22 @@ export const splannerApi = {
   updateItem: (itemId: number, payload: UpdateItemPayload) =>
     fetchJson<Item>(`/items/${itemId}`, {
       method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  listCheckins: (params?: { projectId?: number; kind?: CheckinKind; source?: CheckinSource }) => {
+    const qs = new URLSearchParams()
+    if (params?.projectId !== undefined) qs.set('project_id', String(params.projectId))
+    if (params?.kind) qs.set('kind', params.kind)
+    if (params?.source) qs.set('source', params.source)
+    const query = qs.toString() ? `?${qs.toString()}` : ''
+    return fetchJson<Checkin[]>(`/checkins${query}`)
+  },
+
+  createCheckin: (payload: CreateCheckinPayload) =>
+    fetchJson<Checkin>('/checkins', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }),
