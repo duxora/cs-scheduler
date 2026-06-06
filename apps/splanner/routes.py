@@ -1,5 +1,5 @@
 """SPlanner API routes."""
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import json
 import sqlite3
 from typing import Literal
@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .classify import classify_checkin
+from .connectors import ConnectorNotConfigured, get_connector, list_connectors
 from .db import get_db
 from .digest import compute_kpi_deltas, draft_digest
 
@@ -120,6 +121,17 @@ class DigestUpdate(BaseModel):
     focus: list[FocusItem] | None = None
 
 
+class ConnectorStatus(BaseModel):
+    name: str
+    configured: bool
+
+
+class ConnectorPollResult(BaseModel):
+    polled: int
+    inserted: int
+    checkin_ids: list[int]
+
+
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -228,6 +240,13 @@ def _normalize_week_start(value: str | None) -> str:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="invalid week_start") from exc
     return (day - timedelta(days=day.weekday())).isoformat()
+
+
+def _connector_is_configured(connector) -> bool:
+    checker = getattr(connector, "is_configured", None)
+    if callable(checker):
+        return bool(checker())
+    return True
 
 
 def _resolve_checkin_links(
@@ -613,6 +632,73 @@ async def create_checkin(payload: CheckinCreate, background_tasks: BackgroundTas
             (cursor.lastrowid,),
         ).fetchone()
         return _checkin_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.get("/api/connectors", response_model=list[ConnectorStatus])
+async def get_connectors():
+    return [
+        {"name": connector.name, "configured": _connector_is_configured(connector)}
+        for connector in list_connectors()
+    ]
+
+
+@router.post("/api/connectors/{name}/poll", response_model=ConnectorPollResult)
+async def poll_connector(name: str, background_tasks: BackgroundTasks):
+    connector = get_connector(name)
+    if connector is None:
+        raise HTTPException(status_code=404, detail="not found")
+
+    db = get_db()
+    try:
+        last_seen = db.execute(
+            "SELECT MAX(created_at) AS created_at FROM checkins WHERE source = ?",
+            (name,),
+        ).fetchone()
+        if last_seen is not None and isinstance(last_seen["created_at"], str):
+            try:
+                since = datetime.fromisoformat(last_seen["created_at"].replace("Z", "+00:00"))
+            except ValueError:
+                since = datetime.now(timezone.utc) - timedelta(days=7)
+        else:
+            since = datetime.now(timezone.utc) - timedelta(days=7)
+
+        try:
+            signals = connector.poll(since)
+        except ConnectorNotConfigured as exc:
+            raise HTTPException(status_code=503, detail=f"{name} connector not configured") from exc
+
+        checkin_ids: list[int] = []
+        for signal in signals:
+            existing = db.execute(
+                "SELECT id FROM checkins WHERE source = ? AND source_ref = ?",
+                (name, signal.source_ref),
+            ).fetchone()
+            if existing is not None:
+                continue
+
+            if signal.occurred_at is not None:
+                cursor = db.execute(
+                    "INSERT INTO checkins (body, kind, source, source_ref, ai_classified, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (signal.body, "note", name, signal.source_ref, 0, signal.occurred_at),
+                )
+            else:
+                cursor = db.execute(
+                    "INSERT INTO checkins (body, kind, source, source_ref, ai_classified) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (signal.body, "note", name, signal.source_ref, 0),
+                )
+            checkin_ids.append(cursor.lastrowid)
+            background_tasks.add_task(classify_checkin, cursor.lastrowid)
+
+        db.commit()
+        return {
+            "polled": len(signals),
+            "inserted": len(checkin_ids),
+            "checkin_ids": checkin_ids,
+        }
     finally:
         db.close()
 
