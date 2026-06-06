@@ -4,6 +4,7 @@ import type {
   CheckinSource,
   ConnectorStatus,
   Context,
+  CreateTicketResult,
   CreateCheckinPayload,
   Digest,
   CreateItemPayload,
@@ -146,5 +147,12 @@ export const splannerApi = {
   pollConnector: (name: string) =>
     fetchJson<PollResult>(`/connectors/${name}/poll`, {
       method: 'POST',
+    }),
+
+  createTicketFromItem: (itemId: number, tktProject?: string | null) =>
+    fetchJson<CreateTicketResult>(`/items/${itemId}/create-ticket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tkt_project: tktProject ?? null }),
     }),
 }

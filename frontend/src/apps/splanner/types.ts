@@ -197,3 +197,5 @@ export interface UpdateDigestPayload {
   narrative_md?: string
   focus?: FocusItem[]
 }
+
+export type CreateTicketResult = Item

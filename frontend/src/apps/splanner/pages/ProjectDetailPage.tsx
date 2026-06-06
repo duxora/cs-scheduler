@@ -286,6 +286,20 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function handleCreateTicket(itemId: number) {
+    if (projectIdValue === null) return
+    setActiveAction(`create-ticket-${itemId}`)
+    setError(null)
+    try {
+      await splannerApi.createTicketFromItem(itemId)
+      await loadProjectDetail(projectIdValue)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create tkt ticket.')
+    } finally {
+      setActiveAction(null)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-full items-center justify-center bg-gray-950 text-sm text-gray-500">
@@ -456,6 +470,7 @@ export default function ProjectDetailPage() {
                           ) : (
                             objective.items.map((item) => {
                               const itemBusy = activeAction === `item-status-${item.id}`
+                              const createTicketBusy = activeAction === `create-ticket-${item.id}`
                               return (
                                 <div
                                   key={item.id}
@@ -479,6 +494,22 @@ export default function ProjectDetailPage() {
                                         >
                                           check-in
                                         </button>
+                                        {detail.project.context === 'work' ? (
+                                          item.tkt_ticket_id === null ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => void handleCreateTicket(item.id)}
+                                              disabled={createTicketBusy}
+                                              className="rounded-full border border-gray-700 bg-gray-900 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                            >
+                                              {createTicketBusy ? 'Creating…' : 'Create tkt'}
+                                            </button>
+                                          ) : (
+                                            <span className="rounded-full border border-gray-700 bg-gray-900 px-2.5 py-1 text-[11px] text-gray-300">
+                                              #{item.tkt_ticket_id}
+                                            </span>
+                                          )
+                                        ) : null}
                                       </div>
                                       <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
                                         <span className={ITEM_STATUS_STYLES[item.status]}>{item.status}</span>
