@@ -1,7 +1,9 @@
 """Async check-in classifier for SPlanner."""
 import json
 import logging
+from pathlib import Path
 import re
+import shutil
 import subprocess
 
 from .db import get_db
@@ -11,6 +13,7 @@ logger = logging.getLogger(__name__)
 VALID_KINDS = {"win", "risk", "decision", "blocked", "note"}
 VALID_LEVELS = {"project", "objective", "item"}
 VALID_CONFIDENCE = {"high", "medium", "low"}
+CLAUDE_BIN = shutil.which("claude") or str(Path.home() / ".local/bin/claude")
 
 
 def _render_tree(db) -> tuple[str, dict[str, set[int]]]:
@@ -97,7 +100,7 @@ def classify_checkin(checkin_id: int) -> None:
         )
 
         result = subprocess.run(
-            ["claude", "-p", prompt, "--output-format", "text"],
+            [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
             capture_output=True,
             text=True,
             timeout=60,
