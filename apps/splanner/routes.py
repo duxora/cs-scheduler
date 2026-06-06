@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .capture import ingest_connector
+from .capture import _parse_state_datetime, ingest_connector, load_daemon_state
 from .classify import classify_checkin
 from .connectors import ConnectorNotConfigured, get_connector, list_connectors
 from .db import get_db
@@ -665,10 +665,15 @@ async def poll_connector(name: str, background_tasks: BackgroundTasks):
     connector = get_connector(name)
     if connector is None:
         raise HTTPException(status_code=404, detail="not found")
+    # Honor the daemon's watermark too — otherwise a manual sync after clearing
+    # ingested check-ins would resurrect them (since is DB-derived).
+    state = load_daemon_state()
+    since_floor = _parse_state_datetime(state.get("connectors", {}).get(name))
     try:
         return ingest_connector(
             connector,
             lambda checkin_id: background_tasks.add_task(classify_checkin, checkin_id),
+            since_floor=since_floor,
         )
     except ConnectorNotConfigured as exc:
         raise HTTPException(status_code=503, detail=f"{name} connector not configured") from exc
