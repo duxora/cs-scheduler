@@ -4,6 +4,19 @@ export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done'
 export type CheckinKind = 'win' | 'risk' | 'decision' | 'blocked' | 'note'
 export type CheckinSource = 'manual' | 'calendar' | 'tkt' | 'life-graph'
 
+export interface ProjectHealth {
+  on_track: number
+  at_risk: number
+  blocked: number
+  done: number
+}
+
+export interface LatestCheckinSummary {
+  body: string
+  kind: CheckinKind
+  created_at: string
+}
+
 export interface Project {
   id: number
   context: Context
@@ -12,6 +25,10 @@ export interface Project {
   status: string
   archived: boolean
   created_at: string
+  health: ProjectHealth
+  items_blocked: number
+  latest_checkin: LatestCheckinSummary | null
+  is_blocked: boolean
 }
 
 export interface Item {

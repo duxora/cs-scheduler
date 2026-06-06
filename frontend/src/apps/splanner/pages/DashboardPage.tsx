@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CheckinComposer from '../components/CheckinComposer'
+import { HealthStripe, ObjectiveDots, StackedHealthBar } from '../components/ProjectHealth'
 import { splannerApi } from '../lib/api'
-import type { Context, Project } from '../types'
+import type { CheckinKind, Context, Project } from '../types'
 
 type ContextFilter = 'all' | Context
 
@@ -25,6 +26,43 @@ function ContextDot({ context }: { context: Context }) {
 
 function formatContextLabel(context: Context): string {
   return context.charAt(0).toUpperCase() + context.slice(1)
+}
+
+const CHECKIN_KIND_STYLES: Record<CheckinKind, string> = {
+  win: 'border-emerald-800 bg-emerald-950/40 text-emerald-300',
+  risk: 'border-amber-800 bg-amber-950/40 text-amber-300',
+  decision: 'border-blue-800 bg-blue-950/40 text-blue-300',
+  blocked: 'border-red-800 bg-red-950/40 text-red-300',
+  note: 'border-gray-700 bg-gray-900 text-gray-300',
+}
+
+function formatRelativeTime(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+
+  const diffMs = date.getTime() - Date.now()
+  const absSeconds = Math.abs(Math.round(diffMs / 1000))
+  if (absSeconds < 60) return 'just now'
+
+  const units: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ['day', 86400],
+    ['hour', 3600],
+    ['minute', 60],
+  ]
+
+  for (const [unit, secondsPerUnit] of units) {
+    if (absSeconds >= secondsPerUnit) {
+      const amount = Math.round(diffMs / 1000 / secondsPerUnit)
+      return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(amount, unit)
+    }
+  }
+
+  return 'just now'
+}
+
+function truncateLine(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
 }
 
 export default function DashboardPage() {
@@ -82,6 +120,24 @@ export default function DashboardPage() {
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   )
+
+  const kpis = useMemo(() => {
+    return projects.reduce(
+      (totals, project) => {
+        totals.activeProjects += 1
+        totals.blockedProjects += project.is_blocked ? 1 : 0
+        totals.objectivesAtRisk += project.health.at_risk
+        totals.objectivesDone += project.health.done
+        return totals
+      },
+      {
+        activeProjects: 0,
+        blockedProjects: 0,
+        objectivesAtRisk: 0,
+        objectivesDone: 0,
+      },
+    )
+  }, [projects])
 
   async function handleCreateProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -263,6 +319,25 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500">Active projects</div>
+            <div className="mt-2 text-2xl font-semibold text-gray-100">{kpis.activeProjects}</div>
+          </div>
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500">Blocked projects</div>
+            <div className="mt-2 text-2xl font-semibold text-red-300">{kpis.blockedProjects}</div>
+          </div>
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500">Objectives at risk</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{kpis.objectivesAtRisk}</div>
+          </div>
+          <div className="rounded-xl border border-gray-800 bg-gray-900/70 p-4">
+            <div className="text-[11px] uppercase tracking-wide text-gray-500">Objectives done</div>
+            <div className="mt-2 text-2xl font-semibold text-gray-100">{kpis.objectivesDone}</div>
+          </div>
+        </div>
       </div>
 
       <div className="flex-1">
@@ -283,13 +358,19 @@ export default function DashboardPage() {
               return (
                 <article
                   key={project.id}
-                  className="rounded-xl border border-gray-800 bg-gray-900/70 p-4 shadow-black/20 transition-colors hover:border-gray-700"
+                  className="relative overflow-hidden rounded-xl border border-gray-800 bg-gray-900/70 p-4 pl-6 shadow-black/20 transition-colors hover:border-gray-700"
                 >
+                  <HealthStripe project={project} />
                   <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0">
                       <div className="mb-2 flex items-center gap-2 text-xs text-gray-500">
                         <ContextDot context={project.context} />
                         <span>{formatContextLabel(project.context)}</span>
+                        {project.is_blocked ? (
+                          <span className="rounded-full border border-red-800 bg-red-950/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
+                            Blocked
+                          </span>
+                        ) : null}
                       </div>
                       <h2 className="truncate text-sm font-semibold text-gray-100">
                         <Link to={`projects/${project.id}`} className="hover:text-white hover:underline">
@@ -301,6 +382,38 @@ export default function DashboardPage() {
                       P{project.priority}
                     </div>
                   </div>
+
+                  <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(0,1.4fr)_auto]">
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[11px] uppercase tracking-wide text-gray-500">
+                        <span>Objective health</span>
+                        <span>
+                          {project.health.on_track + project.health.at_risk + project.health.blocked + project.health.done}
+                        </span>
+                      </div>
+                      <StackedHealthBar health={project.health} />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="text-[11px] uppercase tracking-wide text-gray-500">Objectives</div>
+                      <ObjectiveDots health={project.health} />
+                    </div>
+                  </div>
+
+                  {project.latest_checkin ? (
+                    <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2">
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${CHECKIN_KIND_STYLES[project.latest_checkin.kind]}`}
+                      >
+                        {project.latest_checkin.kind}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-gray-300">
+                        {truncateLine(project.latest_checkin.body, 140)}
+                      </span>
+                      <span className="text-xs text-gray-500">
+                        {formatRelativeTime(project.latest_checkin.created_at)}
+                      </span>
+                    </div>
+                  ) : null}
 
                   <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_140px_auto]">
                     <div>

@@ -1,4 +1,6 @@
 """Tests for SPlanner project API routes."""
+import sqlite3
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -30,6 +32,10 @@ def test_create_project_and_list_ranked(client: TestClient):
 
     assert [project["name"] for project in data] == ["High", "Low"]
     assert [project["priority"] for project in data] == [9, 1]
+    assert data[0]["health"] == {"on_track": 0, "at_risk": 0, "blocked": 0, "done": 0}
+    assert data[0]["items_blocked"] == 0
+    assert data[0]["latest_checkin"] is None
+    assert data[0]["is_blocked"] is False
 
 
 def test_context_filter(client: TestClient):
@@ -43,6 +49,133 @@ def test_context_filter(client: TestClient):
     assert len(data) == 1
     assert data[0]["context"] == "family"
     assert data[0]["name"] == "Family"
+
+
+def test_list_projects_includes_health_rollups_for_mixed_objective_statuses(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"}).json()
+    project_id = project["id"]
+
+    objective_ids = []
+    for name in ("Track", "Risk", "Block", "Done"):
+        response = client.post(
+            "/splanner/api/objectives",
+            json={"project_id": project_id, "name": name},
+        )
+        assert response.status_code == 201, response.text
+        objective_ids.append(response.json()["id"])
+
+    assert client.patch(
+        f"/splanner/api/objectives/{objective_ids[1]}",
+        json={"status": "at_risk"},
+    ).status_code == 200
+    assert client.patch(
+        f"/splanner/api/objectives/{objective_ids[2]}",
+        json={"status": "blocked"},
+    ).status_code == 200
+    assert client.patch(
+        f"/splanner/api/objectives/{objective_ids[3]}",
+        json={"status": "done"},
+    ).status_code == 200
+
+    response = client.get("/splanner/api/projects")
+
+    assert response.status_code == 200
+    project_row = response.json()[0]
+    assert project_row["health"] == {"on_track": 1, "at_risk": 1, "blocked": 1, "done": 1}
+    assert project_row["items_blocked"] == 0
+    assert project_row["is_blocked"] is True
+
+
+def test_blocked_objective_auto_boosts_project_above_higher_priority_healthy_project(client: TestClient):
+    client.post("/splanner/api/projects", json={"context": "work", "name": "Healthy", "priority": 9})
+    blocked = client.post("/splanner/api/projects", json={"context": "work", "name": "Blocked", "priority": 1})
+
+    blocked_objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": blocked.json()["id"], "name": "Fix release"},
+    )
+    assert blocked_objective.status_code == 201, blocked_objective.text
+    patched = client.patch(
+        f"/splanner/api/objectives/{blocked_objective.json()['id']}",
+        json={"status": "blocked"},
+    )
+    assert patched.status_code == 200, patched.text
+
+    response = client.get("/splanner/api/projects")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [project["name"] for project in data] == ["Blocked", "Healthy"]
+    assert data[0]["is_blocked"] is True
+    assert data[1]["is_blocked"] is False
+
+
+def test_blocked_item_auto_boosts_even_when_objectives_are_on_track(client: TestClient):
+    client.post("/splanner/api/projects", json={"context": "work", "name": "Healthy", "priority": 9})
+    blocked = client.post("/splanner/api/projects", json={"context": "work", "name": "Item Blocked", "priority": 1})
+
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": blocked.json()["id"], "name": "Ship update"},
+    )
+    item = client.post(
+        "/splanner/api/items",
+        json={"objective_id": objective.json()["id"], "name": "Wait for vendor"},
+    )
+    assert item.status_code == 201, item.text
+    patched = client.patch(
+        f"/splanner/api/items/{item.json()['id']}",
+        json={"status": "blocked", "blockers": "vendor queue"},
+    )
+    assert patched.status_code == 200, patched.text
+
+    response = client.get("/splanner/api/projects")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert [project["name"] for project in data] == ["Item Blocked", "Healthy"]
+    assert data[0]["health"] == {"on_track": 1, "at_risk": 0, "blocked": 0, "done": 0}
+    assert data[0]["items_blocked"] == 1
+    assert data[0]["is_blocked"] is True
+
+
+def test_list_projects_returns_latest_checkin_body_kind_and_created_at(client: TestClient):
+    from server import config as server_config
+
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+
+    older = client.post(
+        "/splanner/api/checkins",
+        json={"project_id": project_id, "body": "Older note", "kind": "note"},
+    )
+    newer = client.post(
+        "/splanner/api/checkins",
+        json={"project_id": project_id, "body": "Newest risk", "kind": "risk"},
+    )
+    assert older.status_code == 201, older.text
+    assert newer.status_code == 201, newer.text
+
+    with sqlite3.connect(server_config.DATA_DIR / "splanner.db") as conn:
+        conn.execute(
+            "UPDATE checkins SET created_at = ? WHERE id = ?",
+            ("2026-06-01T10:00:00.000Z", older.json()["id"]),
+        )
+        conn.execute(
+            "UPDATE checkins SET created_at = ? WHERE id = ?",
+            ("2026-06-01T10:05:00.000Z", newer.json()["id"]),
+        )
+        conn.commit()
+
+    response = client.get("/splanner/api/projects")
+
+    assert response.status_code == 200
+    latest_checkin = response.json()[0]["latest_checkin"]
+    assert latest_checkin == {
+        "body": "Newest risk",
+        "kind": "risk",
+        "created_at": "2026-06-01T10:05:00.000Z",
+    }
 
 
 def test_rename_and_rerank(client: TestClient):

@@ -84,6 +84,28 @@ def _project_row_to_dict(row: sqlite3.Row) -> dict:
     }
 
 
+def _project_list_row_to_dict(row: sqlite3.Row) -> dict:
+    project = _project_row_to_dict(row)
+    project["health"] = {
+        "on_track": row["health_on_track"],
+        "at_risk": row["health_at_risk"],
+        "blocked": row["health_blocked"],
+        "done": row["health_done"],
+    }
+    project["items_blocked"] = row["items_blocked"]
+    project["latest_checkin"] = (
+        {
+            "body": row["latest_checkin_body"],
+            "kind": row["latest_checkin_kind"],
+            "created_at": row["latest_checkin_created_at"],
+        }
+        if row["latest_checkin_created_at"] is not None
+        else None
+    )
+    project["is_blocked"] = bool(row["is_blocked"])
+    return project
+
+
 def _item_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -175,16 +197,76 @@ async def list_projects(
 ):
     db = get_db()
     try:
-        sql = (
-            "SELECT id, context, name, priority, status, archived, created_at "
-            "FROM projects WHERE (? IS NULL OR context = ?)"
-        )
+        sql = """
+            WITH objective_rollups AS (
+                SELECT
+                    project_id,
+                    SUM(CASE WHEN status = 'on_track' THEN 1 ELSE 0 END) AS health_on_track,
+                    SUM(CASE WHEN status = 'at_risk' THEN 1 ELSE 0 END) AS health_at_risk,
+                    SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END) AS health_blocked,
+                    SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS health_done
+                FROM objectives
+                GROUP BY project_id
+            ),
+            item_rollups AS (
+                SELECT
+                    objectives.project_id AS project_id,
+                    SUM(CASE WHEN items.status = 'blocked' THEN 1 ELSE 0 END) AS items_blocked
+                FROM items
+                JOIN objectives ON objectives.id = items.objective_id
+                GROUP BY objectives.project_id
+            ),
+            latest_checkins AS (
+                SELECT project_id, body, kind, created_at
+                FROM (
+                    SELECT
+                        project_id,
+                        body,
+                        kind,
+                        created_at,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY project_id
+                            ORDER BY created_at DESC, id DESC
+                        ) AS row_num
+                    FROM checkins
+                    WHERE project_id IS NOT NULL
+                )
+                WHERE row_num = 1
+            )
+            SELECT
+                projects.id,
+                projects.context,
+                projects.name,
+                projects.priority,
+                projects.status,
+                projects.archived,
+                projects.created_at,
+                COALESCE(objective_rollups.health_on_track, 0) AS health_on_track,
+                COALESCE(objective_rollups.health_at_risk, 0) AS health_at_risk,
+                COALESCE(objective_rollups.health_blocked, 0) AS health_blocked,
+                COALESCE(objective_rollups.health_done, 0) AS health_done,
+                COALESCE(item_rollups.items_blocked, 0) AS items_blocked,
+                latest_checkins.body AS latest_checkin_body,
+                latest_checkins.kind AS latest_checkin_kind,
+                latest_checkins.created_at AS latest_checkin_created_at,
+                CASE
+                    WHEN COALESCE(objective_rollups.health_blocked, 0) > 0
+                        OR COALESCE(item_rollups.items_blocked, 0) > 0
+                    THEN 1
+                    ELSE 0
+                END AS is_blocked
+            FROM projects
+            LEFT JOIN objective_rollups ON objective_rollups.project_id = projects.id
+            LEFT JOIN item_rollups ON item_rollups.project_id = projects.id
+            LEFT JOIN latest_checkins ON latest_checkins.project_id = projects.id
+            WHERE (? IS NULL OR projects.context = ?)
+        """
         params: list[object] = [context, context]
         if not include_archived:
             sql += " AND archived = 0"
-        sql += " ORDER BY priority DESC, id DESC"
+        sql += " ORDER BY is_blocked DESC, priority DESC, id DESC"
         rows = db.execute(sql, tuple(params)).fetchall()
-        return [_project_row_to_dict(row) for row in rows]
+        return [_project_list_row_to_dict(row) for row in rows]
     finally:
         db.close()
 
