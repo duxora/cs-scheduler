@@ -121,6 +121,10 @@ def test_calendar_adapter_maps_events_and_refreshes_token(tmp_path, monkeypatch)
     assert get_calls[0]["headers"] == {"Authorization": "Bearer access-token"}
     assert get_calls[0]["params"]["singleEvents"] == "true"
     assert get_calls[0]["params"]["orderBy"] == "startTime"
+    # timeMax must cap the window at now — without it the poll returns all
+    # future events (upcoming meetings are not check-ins)
+    assert "timeMax" in get_calls[0]["params"]
+    assert get_calls[0]["params"]["timeMax"].endswith("Z")
     assert signals == [
         RawSignal(
             body="Calendar: Team sync (2026-06-10T09:00:00Z – 2026-06-10T09:30:00Z) · 2 attendees",
