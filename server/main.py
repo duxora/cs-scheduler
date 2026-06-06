@@ -64,6 +64,10 @@ from apps.stats.routes import router as stats_router
 register_app("Stats", "KB and scheduler analytics", "/stats", "📊")
 app.include_router(stats_router, prefix="/api/stats")
 
+from apps.splanner.routes import router as splanner_router
+register_app("SPlanner", "Executive planning across work/family/personal", "/splanner", "🧭")
+app.include_router(splanner_router, prefix="/splanner")
+
 # Redirect /prefix → /prefix/ for all app router prefixes
 for _prefix in ["/workflow", "/scheduler", "/kb", "/telegram-bridge"]:
     app.get(_prefix, include_in_schema=False)(
@@ -84,6 +88,12 @@ async def serve_stats_spa(path: str = ""):
 @app.get("/accounts", include_in_schema=False)
 @app.get("/accounts/{path:path}", include_in_schema=False)
 async def serve_accounts_spa(path: str = ""):
+    return FileResponse(str(_SPA_INDEX))
+
+
+@app.get("/splanner", include_in_schema=False)
+@app.get("/splanner/{path:path}", include_in_schema=False)
+async def serve_splanner_spa(path: str = ""):
     return FileResponse(str(_SPA_INDEX))
 
 

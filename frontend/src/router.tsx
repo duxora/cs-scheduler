@@ -8,6 +8,7 @@ const KBApp = lazy(() => import('./apps/kb/App'))
 const SchedulerApp = lazy(() => import('./apps/scheduler/App'))
 const AccountsApp = lazy(() => import('./apps/accounts/App'))
 const StatsApp = lazy(() => import('./apps/stats/App'))
+const SplannerApp = lazy(() => import('./apps/splanner/App'))
 
 export const router = createBrowserRouter([
   {
@@ -33,6 +34,10 @@ export const router = createBrowserRouter([
       {
         path: 'stats/*',
         element: <StatsApp />,
+      },
+      {
+        path: 'splanner/*',
+        element: <SplannerApp />,
       },
       {
         path: 'telegram-bridge/*',

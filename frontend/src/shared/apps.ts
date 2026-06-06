@@ -49,6 +49,14 @@ export const HUB_APPS: HubApp[] = [
     migrated: true,
   },
   {
+    id: 'splanner',
+    name: 'SPlanner',
+    icon: '🧭',
+    path: '/splanner',
+    description: 'Executive planning across work/family/personal',
+    migrated: true,
+  },
+  {
     id: 'telegram',
     name: 'Telegram Bridge',
     icon: '🤖',
