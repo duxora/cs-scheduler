@@ -4,11 +4,13 @@ import CheckinComposer, { type CheckinComposerScope } from '../components/Checki
 import CheckinStream from '../components/CheckinStream'
 import { splannerApi } from '../lib/api'
 import type {
+  ConnectorStatus,
   Context,
   CreateObjectivePayload,
   ItemStatus,
   Objective,
   ObjectiveStatus,
+  PollResult,
   ProjectDetail,
 } from '../types'
 
@@ -107,6 +109,8 @@ export default function ProjectDetailPage() {
   const [objectiveForm, setObjectiveForm] = useState<ObjectiveFormState>(EMPTY_OBJECTIVE_FORM)
   const [itemForms, setItemForms] = useState<Record<number, ItemFormState>>({})
   const [composerScope, setComposerScope] = useState<CheckinComposerScope | null>(null)
+  const [connectors, setConnectors] = useState<ConnectorStatus[]>([])
+  const [syncResult, setSyncResult] = useState<string | null>(null)
 
   async function loadProjectDetail(nextProjectId: number) {
     setIsLoading(true)
@@ -131,6 +135,8 @@ export default function ProjectDetailPage() {
         }
         return next
       })
+      const nextConnectors = await splannerApi.listConnectors()
+      setConnectors(nextConnectors)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load project detail.')
     } finally {
@@ -166,6 +172,14 @@ export default function ProjectDetailPage() {
     if (projectIdValue === null) return
     await loadProjectDetail(projectIdValue)
   }
+
+  useEffect(() => {
+    if (!syncResult) return
+    const timeoutId = window.setTimeout(() => {
+      setSyncResult(null)
+    }, 3000)
+    return () => window.clearTimeout(timeoutId)
+  }, [syncResult])
 
   async function handleCreateObjective(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -252,6 +266,21 @@ export default function ProjectDetailPage() {
       await loadProjectDetail(projectIdValue)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create item.')
+    } finally {
+      setActiveAction(null)
+    }
+  }
+
+  async function handleSyncConnector(name: string) {
+    if (projectIdValue === null) return
+    setActiveAction(`sync-${name}`)
+    setError(null)
+    try {
+      const result: PollResult = await splannerApi.pollConnector(name)
+      await loadProjectDetail(projectIdValue)
+      setSyncResult(`+${result.inserted} check-ins`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sync connector.')
     } finally {
       setActiveAction(null)
     }
@@ -546,6 +575,56 @@ export default function ProjectDetailPage() {
               >
                 Project scope
               </button>
+            </div>
+            <div className="rounded-xl border border-gray-800 bg-gray-900/70 px-4 py-3">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium text-gray-100">Sources</p>
+                  <p className="text-xs text-gray-500">Sync connector signals into the stream.</p>
+                </div>
+                {syncResult ? (
+                  <span className="rounded-full border border-emerald-800 bg-emerald-950/40 px-2.5 py-1 text-[11px] text-emerald-300">
+                    {syncResult}
+                  </span>
+                ) : null}
+              </div>
+              <div className="space-y-3">
+                {connectors.map((connector) => {
+                  const busy = activeAction === `sync-${connector.name}`
+                  return (
+                    <div
+                      key={connector.name}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-3"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium capitalize text-gray-100">{connector.name}</span>
+                          <span
+                            className={`rounded-full border px-2 py-0.5 text-[11px] ${
+                              connector.configured
+                                ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300'
+                                : 'border-amber-800 bg-amber-950/40 text-amber-300'
+                            }`}
+                          >
+                            {connector.configured ? 'configured' : 'not configured'}
+                          </span>
+                        </div>
+                        {!connector.configured ? (
+                          <p className="mt-1 text-xs text-gray-500">needs credentials</p>
+                        ) : null}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleSyncConnector(connector.name)}
+                        disabled={!connector.configured || busy}
+                        className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-xs text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {busy ? 'Syncing…' : 'Sync now'}
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
             <CheckinStream checkins={detail.checkins} refetch={handleCheckinCreated} />
           </aside>

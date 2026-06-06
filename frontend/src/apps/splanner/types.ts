@@ -121,6 +121,17 @@ export interface Digest {
   created_at: string
 }
 
+export interface ConnectorStatus {
+  name: string
+  configured: boolean
+}
+
+export interface PollResult {
+  polled: number
+  inserted: number
+  checkin_ids: number[]
+}
+
 export interface CreateProjectPayload {
   context: Context
   name: string

@@ -2,11 +2,13 @@ import type {
   Checkin,
   CheckinKind,
   CheckinSource,
+  ConnectorStatus,
   Context,
   CreateCheckinPayload,
   Digest,
   CreateItemPayload,
   CreateObjectivePayload,
+  PollResult,
   CreateProjectPayload,
   Item,
   Objective,
@@ -135,6 +137,14 @@ export const splannerApi = {
 
   approveDigest: (digestId: number) =>
     fetchJson<Digest>(`/digest/${digestId}/approve`, {
+      method: 'POST',
+    }),
+
+  listConnectors: () =>
+    fetchJson<ConnectorStatus[]>('/connectors'),
+
+  pollConnector: (name: string) =>
+    fetchJson<PollResult>(`/connectors/${name}/poll`, {
       method: 'POST',
     }),
 }
