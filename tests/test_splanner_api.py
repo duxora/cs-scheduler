@@ -614,3 +614,148 @@ def test_patch_checkin_invalid_kind_returns_422(client: TestClient):
     )
 
     assert response.status_code == 422
+
+
+def test_post_digest_draft_creates_and_redrafts_single_row(client: TestClient, monkeypatch):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={
+            "project_id": project.json()["id"],
+            "name": "Reduce incidents",
+            "metric": "incidents",
+            "target": "10",
+            "unit": "count",
+        },
+    )
+    client.patch(
+        f"/splanner/api/objectives/{objective.json()['id']}",
+        json={"current": "12"},
+    )
+
+    drafts = [
+        {
+            "narrative_md": "Draft one",
+            "risks": [{"title": "Risk", "severity": "high", "evidence_count": 1}],
+            "nudges": [{"type": "pace", "message": "Keep pace", "project_id": project.json()["id"]}],
+            "focus": [{"text": "Focus one", "accepted": False}],
+        },
+        {
+            "narrative_md": "Draft two",
+            "risks": [],
+            "nudges": [],
+            "focus": [{"text": "Focus two", "accepted": False}],
+        },
+    ]
+
+    def fake_draft_digest(week_start: str):
+        assert week_start == "2026-06-01"
+        return drafts.pop(0)
+
+    monkeypatch.setattr("apps.splanner.routes.draft_digest", fake_draft_digest)
+
+    first = client.post("/splanner/api/digest/draft?week_start=2026-06-05")
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert first_body["week_start"] == "2026-06-01"
+    assert first_body["state"] == "drafted"
+    assert first_body["narrative_md"] == "Draft one"
+    assert first_body["kpi_deltas"][0]["objective_id"] == objective.json()["id"]
+
+    second = client.post("/splanner/api/digest/draft?week_start=2026-06-01")
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+    assert second_body["id"] == first_body["id"]
+    assert second_body["state"] == "drafted"
+    assert second_body["narrative_md"] == "Draft two"
+
+    listed = client.get("/splanner/api/digests")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 1
+
+
+def test_post_digest_draft_failure_returns_502_without_row(client: TestClient, monkeypatch):
+    monkeypatch.setattr("apps.splanner.routes.draft_digest", lambda week_start: None)
+
+    response = client.post("/splanner/api/digest/draft?week_start=2026-06-01")
+
+    assert response.status_code == 502
+    listed = client.get("/splanner/api/digests")
+    assert listed.status_code == 200
+    assert listed.json() == []
+
+
+def test_patch_digest_moves_drafted_to_needs_review(client: TestClient, monkeypatch):
+    monkeypatch.setattr(
+        "apps.splanner.routes.draft_digest",
+        lambda week_start: {
+            "narrative_md": "Initial draft",
+            "risks": [],
+            "nudges": [],
+            "focus": [{"text": "Focus one", "accepted": False}],
+        },
+    )
+
+    created = client.post("/splanner/api/digest/draft?week_start=2026-06-01")
+    digest_id = created.json()["id"]
+
+    response = client.patch(
+        f"/splanner/api/digest/{digest_id}",
+        json={"narrative_md": "Edited draft"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["state"] == "needs_review"
+    assert body["narrative_md"] == "Edited draft"
+
+
+def test_patch_approved_digest_returns_409(client: TestClient, monkeypatch):
+    monkeypatch.setattr(
+        "apps.splanner.routes.draft_digest",
+        lambda week_start: {
+            "narrative_md": "Initial draft",
+            "risks": [],
+            "nudges": [],
+            "focus": [{"text": "Focus one", "accepted": False}],
+        },
+    )
+
+    created = client.post("/splanner/api/digest/draft?week_start=2026-06-01")
+    digest_id = created.json()["id"]
+    approved = client.post(f"/splanner/api/digest/{digest_id}/approve")
+    assert approved.status_code == 200
+
+    response = client.patch(
+        f"/splanner/api/digest/{digest_id}",
+        json={"narrative_md": "Should fail"},
+    )
+
+    assert response.status_code == 409
+
+
+def test_approve_digest_and_get_latest(client: TestClient, monkeypatch):
+    monkeypatch.setattr(
+        "apps.splanner.routes.draft_digest",
+        lambda week_start: {
+            "narrative_md": "Initial draft",
+            "risks": [],
+            "nudges": [],
+            "focus": [{"text": "Focus one", "accepted": False}],
+        },
+    )
+
+    empty = client.get("/splanner/api/digest/latest")
+    assert empty.status_code == 404
+
+    created = client.post("/splanner/api/digest/draft?week_start=2026-06-01")
+    digest_id = created.json()["id"]
+
+    approved = client.post(f"/splanner/api/digest/{digest_id}/approve")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["state"] == "approved"
+
+    latest = client.get("/splanner/api/digest/latest")
+    assert latest.status_code == 200
+    assert latest.json()["id"] == digest_id
+    assert latest.json()["state"] == "approved"

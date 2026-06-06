@@ -1,4 +1,6 @@
 """SPlanner API routes."""
+from datetime import date, timedelta
+import json
 import sqlite3
 from typing import Literal
 
@@ -7,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .classify import classify_checkin
 from .db import get_db
+from .digest import compute_kpi_deltas, draft_digest
 
 router = APIRouter()
 
@@ -29,6 +32,9 @@ ObjectiveStatus = Literal["on_track", "at_risk", "blocked", "done"]
 ItemStatus = Literal["todo", "doing", "blocked", "done"]
 CheckinKind = Literal["win", "risk", "decision", "blocked", "note"]
 CheckinSource = Literal["manual", "calendar", "tkt", "life-graph"]
+DigestState = Literal["drafted", "needs_review", "approved"]
+DigestRiskSeverity = Literal["high", "medium", "low"]
+DigestNudgeType = Literal["stale_objective", "pace", "missing_win"]
 
 
 class ObjectiveCreate(BaseModel):
@@ -78,6 +84,40 @@ class CheckinUpdate(BaseModel):
     project_id: int | None = None
     objective_id: int | None = None
     item_id: int | None = None
+
+
+class DigestRisk(BaseModel):
+    title: str
+    severity: DigestRiskSeverity
+    evidence_count: int
+
+
+class DigestNudge(BaseModel):
+    type: DigestNudgeType
+    message: str
+    project_id: int | None = None
+
+
+class FocusItem(BaseModel):
+    text: str
+    accepted: bool
+
+
+class Digest(BaseModel):
+    id: int
+    week_start: str
+    state: DigestState
+    narrative_md: str
+    kpi_deltas: list[dict]
+    risks: list[DigestRisk]
+    nudges: list[DigestNudge]
+    focus: list[FocusItem]
+    created_at: str
+
+
+class DigestUpdate(BaseModel):
+    narrative_md: str | None = None
+    focus: list[FocusItem] | None = None
 
 
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
@@ -158,6 +198,36 @@ def _checkin_row_to_dict(row: sqlite3.Row) -> dict:
         "suggested_id": row["suggested_id"],
         "created_at": row["created_at"],
     }
+
+
+def _parse_json_column(value: str) -> list:
+    parsed = json.loads(value)
+    return parsed if isinstance(parsed, list) else []
+
+
+def _digest_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "week_start": row["week_start"],
+        "state": row["state"],
+        "narrative_md": row["narrative_md"],
+        "kpi_deltas": _parse_json_column(row["kpi_deltas"]),
+        "risks": _parse_json_column(row["risks"]),
+        "nudges": _parse_json_column(row["nudges"]),
+        "focus": _parse_json_column(row["focus"]),
+        "created_at": row["created_at"],
+    }
+
+
+def _normalize_week_start(value: str | None) -> str:
+    if value is None:
+        day = date.today()
+    else:
+        try:
+            day = date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid week_start") from exc
+    return (day - timedelta(days=day.weekday())).isoformat()
 
 
 def _resolve_checkin_links(
@@ -637,5 +707,154 @@ async def update_item(item_id: int, payload: ItemUpdate):
             (item_id,),
         ).fetchone()
         return _item_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.post("/api/digest/draft", response_model=Digest)
+async def create_digest_draft(week_start: str | None = Query(default=None)):
+    normalized_week_start = _normalize_week_start(week_start)
+
+    db = get_db()
+    try:
+        kpi_deltas = compute_kpi_deltas(db, normalized_week_start)
+        draft = draft_digest(normalized_week_start)
+        if draft is None:
+            raise HTTPException(status_code=502, detail="digest draft failed")
+
+        payload = (
+            normalized_week_start,
+            "drafted",
+            draft["narrative_md"],
+            json.dumps(kpi_deltas),
+            json.dumps(draft["risks"]),
+            json.dumps(draft["nudges"]),
+            json.dumps(draft["focus"]),
+        )
+        existing = db.execute(
+            "SELECT id FROM digests WHERE week_start = ?",
+            (normalized_week_start,),
+        ).fetchone()
+        if existing is None:
+            cursor = db.execute(
+                "INSERT INTO digests (week_start, state, narrative_md, kpi_deltas, risks, nudges, focus) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                payload,
+            )
+            digest_id = cursor.lastrowid
+        else:
+            digest_id = existing["id"]
+            db.execute(
+                "UPDATE digests SET state = ?, narrative_md = ?, kpi_deltas = ?, risks = ?, nudges = ?, focus = ? "
+                "WHERE id = ?",
+                (
+                    "drafted",
+                    draft["narrative_md"],
+                    json.dumps(kpi_deltas),
+                    json.dumps(draft["risks"]),
+                    json.dumps(draft["nudges"]),
+                    json.dumps(draft["focus"]),
+                    digest_id,
+                ),
+            )
+        db.commit()
+        row = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        return _digest_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.get("/api/digest/latest", response_model=Digest)
+async def get_latest_digest():
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests ORDER BY week_start DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="not found")
+        return _digest_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.get("/api/digests", response_model=list[Digest])
+async def list_digests():
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests ORDER BY week_start DESC, id DESC"
+        ).fetchall()
+        return [_digest_row_to_dict(row) for row in rows]
+    finally:
+        db.close()
+
+
+@router.patch("/api/digest/{digest_id}", response_model=Digest)
+async def update_digest(digest_id: int, payload: DigestUpdate):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    db = get_db()
+    try:
+        existing = db.execute(
+            "SELECT id, state FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if existing["state"] == "approved":
+            raise HTTPException(status_code=409, detail="approved digests are read-only")
+
+        assignments: list[str] = ["state = ?"]
+        params: list[object] = ["needs_review" if existing["state"] == "drafted" else existing["state"]]
+        if "narrative_md" in fields:
+            assignments.append("narrative_md = ?")
+            params.append(fields["narrative_md"])
+        if "focus" in fields:
+            assignments.append("focus = ?")
+            params.append(json.dumps([item.model_dump() for item in payload.focus or []]))
+
+        params.append(digest_id)
+        db.execute(f"UPDATE digests SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        db.commit()
+        row = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        return _digest_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.post("/api/digest/{digest_id}/approve", response_model=Digest)
+async def approve_digest(digest_id: int):
+    db = get_db()
+    try:
+        existing = db.execute(
+            "SELECT id FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="not found")
+        db.execute(
+            "UPDATE digests SET state = ? WHERE id = ?",
+            ("approved", digest_id),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        return _digest_row_to_dict(row)
     finally:
         db.close()
