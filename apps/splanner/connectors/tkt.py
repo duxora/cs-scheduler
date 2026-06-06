@@ -1,5 +1,7 @@
 """tkt connector for SPlanner."""
 from datetime import datetime
+import logging
+import os
 from pathlib import Path
 import re
 import shutil
@@ -8,6 +10,8 @@ import subprocess
 
 from ..db import get_db
 from . import ConnectorNotConfigured, RawSignal, register
+
+logger = logging.getLogger(__name__)
 
 TKT_BACKLOG_DB_PATH = Path.home() / ".backlog" / "backlog.db"
 TKT_BIN = shutil.which("tkt") or str(Path.home() / ".nvm/versions/node/v22.16.0/bin/tkt")
@@ -97,12 +101,9 @@ class TktConnector:
 
 
 def create_ticket(title: str, desc: str, tkt_project: str | None) -> int:
-    args = ["tkt", "add", title, "--description", desc]
+    args = [TKT_BIN, "add", title, "--description", desc]
     if tkt_project:
         args.extend(["--project", tkt_project])
-
-    binary = shutil.which("tkt") or str(Path.home() / ".nvm/versions/node/v22.16.0/bin/tkt")
-    args[0] = binary
 
     try:
         result = subprocess.run(
@@ -110,11 +111,17 @@ def create_ticket(title: str, desc: str, tkt_project: str | None) -> int:
             capture_output=True,
             text=True,
             timeout=30,
+            env={
+                **os.environ,
+                "PATH": str(Path(TKT_BIN).parent) + os.pathsep + os.environ.get("PATH", ""),
+            },
         )
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
         raise TktCreateError from exc
 
     if result.returncode != 0:
+        if result.stderr.strip():
+            logger.warning("tkt create failed stderr: %s", result.stderr.strip())
         raise TktCreateError(result.stderr.strip() or result.stdout.strip())
 
     match = re.search(r"#(\d+)", result.stdout)
