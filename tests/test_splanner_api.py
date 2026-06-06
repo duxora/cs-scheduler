@@ -516,3 +516,101 @@ def test_list_checkins_filters_by_source(client: TestClient):
     data = response.json()
     assert len(data) == 1
     assert data[0]["source"] == "manual"
+
+
+def test_create_checkin_without_kind_schedules_background_classification(client: TestClient, monkeypatch):
+    calls: list[int] = []
+
+    def fake_classify(checkin_id: int) -> None:
+        calls.append(checkin_id)
+
+    monkeypatch.setattr("apps.splanner.routes.classify_checkin", fake_classify)
+
+    response = client.post(
+        "/splanner/api/checkins",
+        json={"body": "Auto classify this"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["kind"] == "note"
+    assert body["ai_classified"] is False
+    assert body["suggested_level"] is None
+    assert body["suggested_id"] is None
+    assert calls == [body["id"]]
+
+
+def test_create_checkin_with_explicit_kind_does_not_schedule_classifier(client: TestClient, monkeypatch):
+    calls: list[int] = []
+
+    def fake_classify(checkin_id: int) -> None:
+        calls.append(checkin_id)
+
+    monkeypatch.setattr("apps.splanner.routes.classify_checkin", fake_classify)
+
+    response = client.post(
+        "/splanner/api/checkins",
+        json={"body": "Manual classify this", "kind": "risk"},
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["kind"] == "risk"
+    assert body["ai_classified"] is False
+    assert calls == []
+
+
+def test_patch_checkin_updates_kind_and_link_and_clears_suggestion(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Reduce incidents"},
+    )
+
+    created = client.post(
+        "/splanner/api/checkins",
+        json={"body": "Needs relinking", "kind": "note"},
+    )
+    checkin_id = created.json()["id"]
+
+    from server import config as server_config
+
+    with sqlite3.connect(server_config.DATA_DIR / "splanner.db") as conn:
+        conn.execute(
+            "UPDATE checkins SET suggested_level = ?, suggested_id = ? WHERE id = ?",
+            ("project", project.json()["id"], checkin_id),
+        )
+        conn.commit()
+
+    response = client.patch(
+        f"/splanner/api/checkins/{checkin_id}",
+        json={"kind": "blocked", "objective_id": objective.json()["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["kind"] == "blocked"
+    assert body["project_id"] == project.json()["id"]
+    assert body["objective_id"] == objective.json()["id"]
+    assert body["item_id"] is None
+    assert body["suggested_level"] is None
+    assert body["suggested_id"] is None
+
+
+def test_patch_checkin_missing_returns_404(client: TestClient):
+    response = client.patch("/splanner/api/checkins/99999", json={"kind": "note"})
+    assert response.status_code == 404
+
+
+def test_patch_checkin_invalid_kind_returns_422(client: TestClient):
+    created = client.post(
+        "/splanner/api/checkins",
+        json={"body": "Invalid patch target", "kind": "note"},
+    )
+
+    response = client.patch(
+        f"/splanner/api/checkins/{created.json()['id']}",
+        json={"kind": "bad"},
+    )
+
+    assert response.status_code == 422

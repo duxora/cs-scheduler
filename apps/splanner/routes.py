@@ -2,9 +2,10 @@
 import sqlite3
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .classify import classify_checkin
 from .db import get_db
 
 router = APIRouter()
@@ -66,7 +67,14 @@ class ItemUpdate(BaseModel):
 
 class CheckinCreate(BaseModel):
     body: str = Field(min_length=1)
-    kind: CheckinKind
+    kind: CheckinKind | None = None
+    project_id: int | None = None
+    objective_id: int | None = None
+    item_id: int | None = None
+
+
+class CheckinUpdate(BaseModel):
+    kind: CheckinKind | None = None
     project_id: int | None = None
     objective_id: int | None = None
     item_id: int | None = None
@@ -146,6 +154,8 @@ def _checkin_row_to_dict(row: sqlite3.Row) -> dict:
         "source": row["source"],
         "source_ref": row["source_ref"],
         "ai_classified": bool(row["ai_classified"]),
+        "suggested_level": row["suggested_level"],
+        "suggested_id": row["suggested_id"],
         "created_at": row["created_at"],
     }
 
@@ -359,7 +369,8 @@ async def get_project_detail(project_id: int):
                 objectives_by_id[row["objective_id"]]["items"].append(_item_row_to_dict(row))
 
         checkin_rows = db.execute(
-            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at "
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, "
+            "suggested_level, suggested_id, created_at "
             "FROM checkins WHERE project_id = ? ORDER BY created_at DESC, id DESC",
             (project_id,),
         ).fetchall()
@@ -479,7 +490,8 @@ async def list_checkins(
     db = get_db()
     try:
         sql = (
-            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at "
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, "
+            "suggested_level, suggested_id, created_at "
             "FROM checkins WHERE (? IS NULL OR project_id = ?) "
             "AND (? IS NULL OR kind = ?) "
             "AND (? IS NULL OR source = ?) "
@@ -495,7 +507,7 @@ async def list_checkins(
 
 
 @router.post("/api/checkins", status_code=201)
-async def create_checkin(payload: CheckinCreate):
+async def create_checkin(payload: CheckinCreate, background_tasks: BackgroundTasks):
     db = get_db()
     try:
         resolved_project_id, resolved_objective_id, resolved_item_id = _resolve_checkin_links(
@@ -504,24 +516,90 @@ async def create_checkin(payload: CheckinCreate):
             objective_id=payload.objective_id,
             item_id=payload.item_id,
         )
+        kind = payload.kind or "note"
+        should_classify = payload.kind is None
         cursor = db.execute(
-            "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, ai_classified) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, ai_classified, "
+            "suggested_level, suggested_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 resolved_project_id,
                 resolved_objective_id,
                 resolved_item_id,
                 payload.body.strip(),
-                payload.kind,
+                kind,
                 "manual",
                 0,
+                None,
+                None,
             ),
         )
         db.commit()
+        if should_classify:
+            background_tasks.add_task(classify_checkin, cursor.lastrowid)
         row = db.execute(
-            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at "
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, "
+            "suggested_level, suggested_id, created_at "
             "FROM checkins WHERE id = ?",
             (cursor.lastrowid,),
+        ).fetchone()
+        return _checkin_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.patch("/api/checkins/{checkin_id}")
+async def update_checkin(checkin_id: int, payload: CheckinUpdate):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    db = get_db()
+    try:
+        existing = db.execute(
+            "SELECT id, project_id, objective_id, item_id FROM checkins WHERE id = ?",
+            (checkin_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="not found")
+
+        assignments: list[str] = []
+        params: list[object] = []
+
+        if "kind" in fields:
+            assignments.append("kind = ?")
+            params.append(fields["kind"])
+
+        link_fields_present = any(field in fields for field in ("project_id", "objective_id", "item_id"))
+        if link_fields_present:
+            resolved_project_id, resolved_objective_id, resolved_item_id = _resolve_checkin_links(
+                db,
+                project_id=fields.get("project_id"),
+                objective_id=fields.get("objective_id"),
+                item_id=fields.get("item_id"),
+            )
+            assignments.extend([
+                "project_id = ?",
+                "objective_id = ?",
+                "item_id = ?",
+            ])
+            params.extend([
+                resolved_project_id,
+                resolved_objective_id,
+                resolved_item_id,
+            ])
+
+        assignments.extend([
+            "suggested_level = ?",
+            "suggested_id = ?",
+        ])
+        params.extend([None, None, checkin_id])
+
+        db.execute(f"UPDATE checkins SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        db.commit()
+        row = db.execute(
+            "SELECT id, project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, "
+            "suggested_level, suggested_id, created_at FROM checkins WHERE id = ?",
+            (checkin_id,),
         ).fetchone()
         return _checkin_row_to_dict(row)
     finally:

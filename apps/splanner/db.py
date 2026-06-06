@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS checkins (
     source TEXT NOT NULL CHECK (source IN ('manual', 'calendar', 'tkt', 'life-graph')),
     source_ref TEXT,
     ai_classified INTEGER NOT NULL DEFAULT 0 CHECK (ai_classified IN (0, 1)),
+    suggested_level TEXT CHECK (suggested_level IN ('project', 'objective', 'item')),
+    suggested_id INTEGER,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -87,6 +89,21 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
+        self._migrate_checkins()
+
+    def _migrate_checkins(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(checkins)").fetchall()
+        }
+        if "suggested_level" not in columns:
+            self.conn.execute(
+                "ALTER TABLE checkins ADD COLUMN suggested_level TEXT "
+                "CHECK (suggested_level IN ('project', 'objective', 'item'))"
+            )
+        if "suggested_id" not in columns:
+            self.conn.execute("ALTER TABLE checkins ADD COLUMN suggested_id INTEGER")
+        self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         return self.conn.execute(sql, params)
