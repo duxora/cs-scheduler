@@ -23,6 +23,15 @@ def _default_since() -> datetime:
     return datetime.now(timezone.utc) - timedelta(days=7)
 
 
+def _parse_state_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _resolve_item_hierarchy(db, item_id: int) -> tuple[int, int, int] | tuple[None, None, None]:
     item = db.execute(
         "SELECT items.id AS item_id, items.objective_id AS objective_id, objectives.project_id AS project_id "
@@ -34,7 +43,11 @@ def _resolve_item_hierarchy(db, item_id: int) -> tuple[int, int, int] | tuple[No
     return item["project_id"], item["objective_id"], item["item_id"]
 
 
-def ingest_connector(connector: Connector, schedule_classify: Callable[[int], None]) -> dict:
+def ingest_connector(
+    connector: Connector,
+    schedule_classify: Callable[[int], None],
+    since_floor: datetime | None = None,
+) -> dict:
     db = get_db()
     try:
         last_seen = db.execute(
@@ -48,6 +61,8 @@ def ingest_connector(connector: Connector, schedule_classify: Callable[[int], No
                 since = _default_since()
         else:
             since = _default_since()
+        if since_floor is not None and since_floor > since:
+            since = since_floor
 
         signals = connector.poll(since)
 
@@ -156,7 +171,11 @@ async def run_capture_pass(now: datetime | None = None, state_path: Path = DAEMO
 
     for connector in list_connectors():
         try:
-            ingest_connector(connector, schedule_classify)
+            ingest_connector(
+                connector,
+                schedule_classify,
+                since_floor=_parse_state_datetime(connectors_state.get(connector.name)),
+            )
         except ConnectorNotConfigured:
             logger.debug("connector %s not configured", connector.name)
             continue

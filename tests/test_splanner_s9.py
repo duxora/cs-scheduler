@@ -115,6 +115,51 @@ def test_ingest_connector_dedups_and_schedules_only_classified(client: TestClien
     assert scheduled == [1]
 
 
+def test_ingest_connector_uses_newer_since_floor_over_db_max(client: TestClient):
+    from apps.splanner.capture import ingest_connector
+    from apps.splanner.connectors import RawSignal
+
+    seen_since: list[datetime] = []
+
+    class FakeConnector:
+        name = "life-graph"
+
+        def poll(self, since):
+            seen_since.append(since)
+            return [RawSignal(body="note", source_ref="evt-1", occurred_at="2026-06-10T09:00:00Z")]
+
+    first = ingest_connector(FakeConnector(), lambda checkin_id: None)
+    assert first["inserted"] == 1
+
+    newer_floor = datetime_from("2026-06-10T10:00:00Z")
+    ingest_connector(FakeConnector(), lambda checkin_id: None, since_floor=newer_floor)
+
+    assert seen_since[1] == newer_floor
+
+
+def test_ingest_connector_prefers_db_since_when_floor_older_or_missing(client: TestClient):
+    from apps.splanner.capture import ingest_connector
+    from apps.splanner.connectors import RawSignal
+
+    seen_since: list[datetime] = []
+    db_derived_since = datetime_from("2026-06-10T09:00:00Z")
+
+    class FakeConnector:
+        name = "life-graph"
+
+        def poll(self, since):
+            seen_since.append(since)
+            return [RawSignal(body="note", source_ref=f"evt-{len(seen_since)}", occurred_at="2026-06-10T09:00:00Z")]
+
+    ingest_connector(FakeConnector(), lambda checkin_id: None)
+    older_floor = datetime_from("2026-06-10T08:00:00Z")
+    ingest_connector(FakeConnector(), lambda checkin_id: None, since_floor=older_floor)
+    ingest_connector(FakeConnector(), lambda checkin_id: None, since_floor=None)
+
+    assert seen_since[1] == db_derived_since
+    assert seen_since[2] == db_derived_since
+
+
 @pytest.mark.asyncio
 async def test_run_capture_pass_continues_on_failures_and_updates_state(client: TestClient, tmp_path, monkeypatch):
     import apps.splanner.capture as capture_module
@@ -155,6 +200,37 @@ async def test_run_capture_pass_continues_on_failures_and_updates_state(client: 
 
     saved = capture_module.load_daemon_state(state_path)
     assert saved["last_capture_date"] == "2026-06-10"
+
+
+@pytest.mark.asyncio
+async def test_run_capture_pass_ignores_malformed_state_timestamp(client: TestClient, tmp_path, monkeypatch):
+    import apps.splanner.capture as capture_module
+
+    class CalendarConnector:
+        name = "calendar"
+
+    seen_floor: list[object] = []
+    state_path = tmp_path / "splanner-daemon-state.json"
+    capture_module.save_daemon_state(
+        {
+            "last_capture_date": None,
+            "last_digest_week": None,
+            "connectors": {"calendar": "not-a-timestamp"},
+        },
+        state_path,
+    )
+
+    def fake_ingest(connector, schedule_classify, since_floor=None):
+        seen_floor.append(since_floor)
+        return {"polled": 0, "inserted": 0, "checkin_ids": []}
+
+    monkeypatch.setattr(capture_module, "DAEMON_STATE_PATH", state_path)
+    monkeypatch.setattr(capture_module, "list_connectors", lambda: [CalendarConnector()])
+    monkeypatch.setattr(capture_module, "ingest_connector", fake_ingest)
+
+    await capture_module.run_capture_pass(now=datetime_from("2026-06-10T08:05:00Z"), state_path=state_path)
+
+    assert seen_floor == [None]
 
 
 def test_should_draft_digest_respects_monday_state_and_approved_digest(tmp_path, monkeypatch):
