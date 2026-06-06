@@ -100,3 +100,151 @@ def test_detail_returns_empty_objectives_list(client: TestClient):
 def test_detail_missing_project_returns_404(client: TestClient):
     response = client.get("/splanner/api/projects/99999")
     assert response.status_code == 404
+
+
+def test_create_objective_under_project_appears_in_detail_tree(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+
+    response = client.post(
+        "/splanner/api/objectives",
+        json={
+            "project_id": project_id,
+            "name": "Stabilize CI",
+            "metric": "pass rate",
+            "target": "99",
+            "unit": "%",
+            "deadline": "2026-06-30",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["project_id"] == project_id
+    assert body["name"] == "Stabilize CI"
+    assert body["status"] == "on_track"
+
+    detail = client.get(f"/splanner/api/projects/{project_id}")
+    assert detail.status_code == 200
+    objectives = detail.json()["objectives"]
+    assert len(objectives) == 1
+    assert objectives[0]["id"] == body["id"]
+    assert objectives[0]["items"] == []
+
+
+def test_create_objective_missing_project_returns_404(client: TestClient):
+    response = client.post("/splanner/api/objectives", json={"project_id": 99999, "name": "Missing"})
+    assert response.status_code == 404
+
+
+def test_patch_objective_current_and_status(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Improve uptime"},
+    )
+    objective_id = objective.json()["id"]
+
+    response = client.patch(
+        f"/splanner/api/objectives/{objective_id}",
+        json={"current": "97", "status": "at_risk"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["current"] == "97"
+    assert body["status"] == "at_risk"
+
+
+def test_invalid_objective_status_returns_422(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Improve uptime"},
+    )
+
+    response = client.patch(
+        f"/splanner/api/objectives/{objective.json()['id']}",
+        json={"status": "bad"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_item_under_objective_appears_nested_in_detail(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    project_id = project.json()["id"]
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project_id, "name": "Reduce incidents"},
+    )
+    objective_id = objective.json()["id"]
+
+    response = client.post(
+        "/splanner/api/items",
+        json={
+            "objective_id": objective_id,
+            "name": "Close flaky tests",
+            "eta": "2026-06-20",
+            "tkt_ticket_id": 1751,
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["objective_id"] == objective_id
+    assert body["status"] == "todo"
+
+    detail = client.get(f"/splanner/api/projects/{project_id}")
+    assert detail.status_code == 200
+    items = detail.json()["objectives"][0]["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == body["id"]
+    assert items[0]["tkt_ticket_id"] == 1751
+
+
+def test_create_item_missing_objective_returns_404(client: TestClient):
+    response = client.post("/splanner/api/items", json={"objective_id": 99999, "name": "Missing"})
+    assert response.status_code == 404
+
+
+def test_patch_item_status_and_blockers(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Reduce incidents"},
+    )
+    item = client.post(
+        "/splanner/api/items",
+        json={"objective_id": objective.json()["id"], "name": "Close flaky tests"},
+    )
+    item_id = item.json()["id"]
+
+    response = client.patch(
+        f"/splanner/api/items/{item_id}",
+        json={"status": "blocked", "blockers": "waiting on owner"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "blocked"
+    assert body["blockers"] == "waiting on owner"
+
+
+def test_invalid_item_status_returns_422(client: TestClient):
+    project = client.post("/splanner/api/projects", json={"context": "work", "name": "Ops"})
+    objective = client.post(
+        "/splanner/api/objectives",
+        json={"project_id": project.json()["id"], "name": "Reduce incidents"},
+    )
+    item = client.post(
+        "/splanner/api/items",
+        json={"objective_id": objective.json()["id"], "name": "Close flaky tests"},
+    )
+
+    response = client.patch(
+        f"/splanner/api/items/{item.json()['id']}",
+        json={"status": "bad"},
+    )
+
+    assert response.status_code == 422

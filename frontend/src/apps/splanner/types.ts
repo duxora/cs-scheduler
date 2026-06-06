@@ -1,4 +1,6 @@
 export type Context = 'work' | 'family' | 'personal'
+export type ObjectiveStatus = 'on_track' | 'at_risk' | 'blocked' | 'done'
+export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done'
 
 export interface Project {
   id: number
@@ -14,7 +16,7 @@ export interface Item {
   id: number
   objective_id: number
   name: string
-  status: string
+  status: ItemStatus
   eta: string | null
   blockers: string | null
   tkt_ticket_id: number | null
@@ -30,7 +32,7 @@ export interface Objective {
   current: number | null
   unit: string | null
   deadline: string | null
-  status: string
+  status: ObjectiveStatus
   created_at: string
   items: Item[]
 }
@@ -64,4 +66,38 @@ export interface UpdateProjectPayload {
   name?: string
   priority?: number
   archived?: boolean
+}
+
+export interface CreateObjectivePayload {
+  project_id: number
+  name: string
+  metric?: string | null
+  target?: number | null
+  unit?: string | null
+  deadline?: string | null
+}
+
+export interface UpdateObjectivePayload {
+  name?: string
+  metric?: string | null
+  target?: number | null
+  current?: number | null
+  unit?: string | null
+  deadline?: string | null
+  status?: ObjectiveStatus
+}
+
+export interface CreateItemPayload {
+  objective_id: number
+  name: string
+  eta?: string | null
+  tkt_ticket_id?: number | null
+}
+
+export interface UpdateItemPayload {
+  name?: string
+  status?: ItemStatus
+  eta?: string | null
+  blockers?: string | null
+  tkt_ticket_id?: number | null
 }

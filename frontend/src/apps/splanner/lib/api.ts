@@ -1,8 +1,14 @@
 import type {
   Context,
+  CreateItemPayload,
+  CreateObjectivePayload,
   CreateProjectPayload,
+  Item,
+  Objective,
   Project,
   ProjectDetail,
+  UpdateItemPayload,
+  UpdateObjectivePayload,
   UpdateProjectPayload,
 } from '../types'
 
@@ -48,4 +54,32 @@ export const splannerApi = {
 
   getProjectDetail: (projectId: number) =>
     fetchJson<ProjectDetail>(`/projects/${projectId}`),
+
+  createObjective: (payload: CreateObjectivePayload) =>
+    fetchJson<Objective>('/objectives', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  updateObjective: (objectiveId: number, payload: UpdateObjectivePayload) =>
+    fetchJson<Objective>(`/objectives/${objectiveId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  createItem: (payload: CreateItemPayload) =>
+    fetchJson<Item>('/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  updateItem: (itemId: number, payload: UpdateItemPayload) =>
+    fetchJson<Item>(`/items/${itemId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
 }

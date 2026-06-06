@@ -24,6 +24,44 @@ class ProjectUpdate(BaseModel):
     archived: bool | None = None
 
 
+ObjectiveStatus = Literal["on_track", "at_risk", "blocked", "done"]
+ItemStatus = Literal["todo", "doing", "blocked", "done"]
+
+
+class ObjectiveCreate(BaseModel):
+    project_id: int
+    name: str = Field(min_length=1)
+    metric: str | None = None
+    target: str | None = None
+    unit: str | None = None
+    deadline: str | None = None
+
+
+class ObjectiveUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    metric: str | None = None
+    target: str | None = None
+    current: str | None = None
+    unit: str | None = None
+    deadline: str | None = None
+    status: ObjectiveStatus | None = None
+
+
+class ItemCreate(BaseModel):
+    objective_id: int
+    name: str = Field(min_length=1)
+    eta: str | None = None
+    tkt_ticket_id: int | None = None
+
+
+class ItemUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    status: ItemStatus | None = None
+    eta: str | None = None
+    blockers: str | None = None
+    tkt_ticket_id: int | None = None
+
+
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -199,5 +237,137 @@ async def get_project_detail(project_id: int):
             "objectives": objectives,
             "checkins": [_checkin_row_to_dict(row) for row in checkin_rows],
         }
+    finally:
+        db.close()
+
+
+@router.post("/api/objectives", status_code=201)
+async def create_objective(payload: ObjectiveCreate):
+    db = get_db()
+    try:
+        project = db.execute("SELECT id FROM projects WHERE id = ?", (payload.project_id,)).fetchone()
+        if project is None:
+            raise HTTPException(status_code=404, detail="not found")
+
+        cursor = db.execute(
+            "INSERT INTO objectives (project_id, name, metric, target, unit, deadline) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                payload.project_id,
+                payload.name.strip(),
+                payload.metric,
+                payload.target,
+                payload.unit,
+                payload.deadline,
+            ),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, created_at "
+            "FROM objectives WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return _objective_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.patch("/api/objectives/{objective_id}")
+async def update_objective(objective_id: int, payload: ObjectiveUpdate):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    db = get_db()
+    try:
+        existing = db.execute(
+            "SELECT id FROM objectives WHERE id = ?",
+            (objective_id,),
+        ).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="not found")
+
+        assignments: list[str] = []
+        params: list[object] = []
+        for field in ("name", "metric", "target", "current", "unit", "deadline", "status"):
+            if field in fields:
+                assignments.append(f"{field} = ?")
+                value = fields[field]
+                if field == "name":
+                    value = value.strip()
+                params.append(value)
+
+        params.append(objective_id)
+        db.execute(f"UPDATE objectives SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        db.commit()
+        row = db.execute(
+            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, created_at "
+            "FROM objectives WHERE id = ?",
+            (objective_id,),
+        ).fetchone()
+        return _objective_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.post("/api/items", status_code=201)
+async def create_item(payload: ItemCreate):
+    db = get_db()
+    try:
+        objective = db.execute("SELECT id FROM objectives WHERE id = ?", (payload.objective_id,)).fetchone()
+        if objective is None:
+            raise HTTPException(status_code=404, detail="not found")
+
+        cursor = db.execute(
+            "INSERT INTO items (objective_id, name, eta, tkt_ticket_id) VALUES (?, ?, ?, ?)",
+            (
+                payload.objective_id,
+                payload.name.strip(),
+                payload.eta,
+                payload.tkt_ticket_id,
+            ),
+        )
+        db.commit()
+        row = db.execute(
+            "SELECT id, objective_id, name, status, eta, blockers, tkt_ticket_id, created_at "
+            "FROM items WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return _item_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.patch("/api/items/{item_id}")
+async def update_item(item_id: int, payload: ItemUpdate):
+    fields = payload.model_dump(exclude_unset=True)
+    if not fields:
+        raise HTTPException(status_code=400, detail="no fields to update")
+
+    db = get_db()
+    try:
+        existing = db.execute("SELECT id FROM items WHERE id = ?", (item_id,)).fetchone()
+        if existing is None:
+            raise HTTPException(status_code=404, detail="not found")
+
+        assignments: list[str] = []
+        params: list[object] = []
+        for field in ("name", "status", "eta", "blockers", "tkt_ticket_id"):
+            if field in fields:
+                assignments.append(f"{field} = ?")
+                value = fields[field]
+                if field == "name":
+                    value = value.strip()
+                params.append(value)
+
+        params.append(item_id)
+        db.execute(f"UPDATE items SET {', '.join(assignments)} WHERE id = ?", tuple(params))
+        db.commit()
+        row = db.execute(
+            "SELECT id, objective_id, name, status, eta, blockers, tkt_ticket_id, created_at "
+            "FROM items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        return _item_row_to_dict(row)
     finally:
         db.close()

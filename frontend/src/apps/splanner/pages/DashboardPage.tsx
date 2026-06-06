@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { splannerApi } from '../lib/api'
 import type { Context, Project } from '../types'
 
@@ -232,7 +233,11 @@ export default function DashboardPage() {
                         <ContextDot context={project.context} />
                         <span>{formatContextLabel(project.context)}</span>
                       </div>
-                      <h2 className="truncate text-sm font-semibold text-gray-100">{project.name}</h2>
+                      <h2 className="truncate text-sm font-semibold text-gray-100">
+                        <Link to={`projects/${project.id}`} className="hover:text-white hover:underline">
+                          {project.name}
+                        </Link>
+                      </h2>
                     </div>
                     <div className="shrink-0 rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-xs font-medium text-gray-300">
                       P{project.priority}
