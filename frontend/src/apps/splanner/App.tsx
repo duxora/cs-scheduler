@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react'
 import { Route, Routes } from 'react-router-dom'
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'))
+const DigestPage = lazy(() => import('./pages/DigestPage'))
 const ProjectDetailPage = lazy(() => import('./pages/ProjectDetailPage'))
 
 function PageLoader() {
@@ -15,6 +16,7 @@ export default function SplannerApp() {
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index element={<DashboardPage />} />
+            <Route path="digest" element={<DigestPage />} />
             <Route path="projects/:projectId" element={<ProjectDetailPage />} />
           </Routes>
         </Suspense>

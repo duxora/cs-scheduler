@@ -211,7 +211,15 @@ export default function DashboardPage() {
             <h1 className="text-2xl font-semibold tracking-tight">SPlanner</h1>
             <p className="text-sm text-gray-500">Executive planning across work, family, and personal scopes.</p>
           </div>
-          <span className="text-xs text-gray-500">{headerCount}</span>
+          <div className="flex items-center gap-3">
+            <Link
+              to="/splanner/digest"
+              className="rounded-full border border-gray-800 bg-gray-900 px-3 py-1.5 text-sm text-gray-300 transition-colors hover:border-gray-700 hover:text-gray-100"
+            >
+              Weekly digest
+            </Link>
+            <span className="text-xs text-gray-500">{headerCount}</span>
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">

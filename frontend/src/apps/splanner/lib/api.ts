@@ -4,6 +4,7 @@ import type {
   CheckinSource,
   Context,
   CreateCheckinPayload,
+  Digest,
   CreateItemPayload,
   CreateObjectivePayload,
   CreateProjectPayload,
@@ -13,6 +14,7 @@ import type {
   ProjectDetail,
   UpdateItemPayload,
   UpdateCheckinPayload,
+  UpdateDigestPayload,
   UpdateObjectivePayload,
   UpdateProjectPayload,
 } from '../types'
@@ -109,5 +111,30 @@ export const splannerApi = {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    }),
+
+  draftDigest: (weekStart?: string) => {
+    const query = weekStart ? `?${new URLSearchParams({ week_start: weekStart }).toString()}` : ''
+    return fetchJson<Digest>(`/digest/draft${query}`, {
+      method: 'POST',
+    })
+  },
+
+  getLatestDigest: () =>
+    fetchJson<Digest>('/digest/latest'),
+
+  listDigests: () =>
+    fetchJson<Digest[]>('/digests'),
+
+  updateDigest: (digestId: number, payload: UpdateDigestPayload) =>
+    fetchJson<Digest>(`/digest/${digestId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  approveDigest: (digestId: number) =>
+    fetchJson<Digest>(`/digest/${digestId}/approve`, {
+      method: 'POST',
     }),
 }

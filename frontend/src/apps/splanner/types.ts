@@ -3,6 +3,9 @@ export type ObjectiveStatus = 'on_track' | 'at_risk' | 'blocked' | 'done'
 export type ItemStatus = 'todo' | 'doing' | 'blocked' | 'done'
 export type CheckinKind = 'win' | 'risk' | 'decision' | 'blocked' | 'note'
 export type CheckinSource = 'manual' | 'calendar' | 'tkt' | 'life-graph'
+export type DigestState = 'drafted' | 'needs_review' | 'approved'
+export type DigestRiskSeverity = 'high' | 'medium' | 'low'
+export type DigestNudgeType = 'stale_objective' | 'pace' | 'missing_win'
 
 export interface ProjectHealth {
   on_track: number
@@ -77,6 +80,47 @@ export interface ProjectDetail {
   checkins: Checkin[]
 }
 
+export interface KpiDelta {
+  objective_id: number
+  project_id: number
+  objective_name: string
+  project_name: string
+  metric: string | null
+  unit: string | null
+  target: string | null
+  current: string | null
+  prev_current: string | null
+}
+
+export interface DigestRisk {
+  title: string
+  severity: DigestRiskSeverity
+  evidence_count: number
+}
+
+export interface DigestNudge {
+  type: DigestNudgeType
+  message: string
+  project_id: number | null
+}
+
+export interface FocusItem {
+  text: string
+  accepted: boolean
+}
+
+export interface Digest {
+  id: number
+  week_start: string
+  state: DigestState
+  narrative_md: string
+  kpi_deltas: KpiDelta[]
+  risks: DigestRisk[]
+  nudges: DigestNudge[]
+  focus: FocusItem[]
+  created_at: string
+}
+
 export interface CreateProjectPayload {
   context: Context
   name: string
@@ -136,4 +180,9 @@ export interface UpdateCheckinPayload {
   project_id?: number | null
   objective_id?: number | null
   item_id?: number | null
+}
+
+export interface UpdateDigestPayload {
+  narrative_md?: string
+  focus?: FocusItem[]
 }
