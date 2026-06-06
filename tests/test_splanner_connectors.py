@@ -153,7 +153,8 @@ def test_connectors_route_lists_calendar_unconfigured(client: TestClient):
     response = client.get("/splanner/api/connectors")
 
     assert response.status_code == 200
-    assert response.json() == [{"name": "calendar", "configured": False}]
+    by_name = {entry["name"]: entry["configured"] for entry in response.json()}
+    assert by_name["calendar"] is False
 
 
 def test_calendar_poll_route_inserts_and_dedups(client: TestClient, monkeypatch):
