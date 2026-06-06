@@ -662,11 +662,6 @@ async def get_connectors():
 
 @router.post("/api/connectors/{name}/poll", response_model=ConnectorPollResult)
 async def poll_connector(name: str, background_tasks: BackgroundTasks):
-    if name == "life-graph":
-        from .connectors import life_graph as _life_graph  # noqa: F401
-    if name == "tkt":
-        from .connectors import tkt as _tkt  # noqa: F401
-
     connector = get_connector(name)
     if connector is None:
         raise HTTPException(status_code=404, detail="not found")

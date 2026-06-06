@@ -158,9 +158,6 @@ def should_draft_digest(now: datetime, state: dict, db) -> bool:
 
 
 async def run_capture_pass(now: datetime | None = None, state_path: Path = DAEMON_STATE_PATH) -> dict:
-    from .connectors import life_graph as _life_graph  # noqa: F401
-    from .connectors import tkt as _tkt  # noqa: F401
-
     current = now or datetime.now().astimezone()
     state = load_daemon_state(state_path)
     scheduled_tasks: list[asyncio.Task] = []

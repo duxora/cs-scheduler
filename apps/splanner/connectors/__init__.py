@@ -39,3 +39,5 @@ def list_connectors() -> list[Connector]:
     return list(_REGISTRY.values())
 
 from .calendar import calendar_connector  # noqa: E402,F401
+from .life_graph import life_graph_connector  # noqa: E402,F401
+from .tkt import tkt_connector  # noqa: E402,F401

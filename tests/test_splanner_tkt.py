@@ -178,9 +178,9 @@ def test_connectors_route_lists_calendar_tkt_and_life_graph(client: TestClient, 
     create_life_graph_db(life_graph_db_path, [])
     monkeypatch.setattr(tkt_module, "TKT_BACKLOG_DB_PATH", tkt_db_path)
     monkeypatch.setattr(life_graph_module, "LIFE_GRAPH_DB_PATH", life_graph_db_path)
-    import apps.splanner.connectors.life_graph  # noqa: F401
-    import apps.splanner.connectors.tkt  # noqa: F401
 
+    # No explicit adapter imports here: registration must happen eagerly via the
+    # connectors package import (regression guard for lazy-registration bugs).
     response = client.get("/splanner/api/connectors")
 
     assert response.status_code == 200
