@@ -58,11 +58,15 @@ class GoogleCalendarConnector:
     def _list_events(self, credentials: dict, access_token: str, since: datetime) -> list[dict]:
         calendar_id = credentials.get("calendar_id") or "primary"
         time_min = since.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        # timeMax caps the window at now: check-ins capture what happened,
+        # not upcoming meetings (timeMin alone returns all future events).
+        time_max = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         response = httpx.get(
             f"https://www.googleapis.com/calendar/v3/calendars/{quote(calendar_id, safe='')}/events",
             headers={"Authorization": f"Bearer {access_token}"},
             params={
                 "timeMin": time_min,
+                "timeMax": time_max,
                 "singleEvents": "true",
                 "orderBy": "startTime",
                 "maxResults": "50",
