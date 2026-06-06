@@ -103,7 +103,7 @@ def classify_checkin(checkin_id: int) -> None:
             [CLAUDE_BIN, "-p", prompt, "--output-format", "text"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
         if result.returncode != 0:
             logger.warning("checkin classification failed for %s: rc=%s", checkin_id, result.returncode)
