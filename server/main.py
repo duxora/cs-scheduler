@@ -1,12 +1,34 @@
 """Tools Hub — FastAPI application."""
+from contextlib import asynccontextmanager
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import os
 from pathlib import Path
 from starlette.responses import FileResponse
 
-app = FastAPI(title="Tools Hub")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = None
+    if os.environ.get("SPLANNER_DAEMON", "1") == "1":
+        from apps.splanner.capture import capture_daemon_loop
+
+        task = asyncio.create_task(capture_daemon_loop())
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+app = FastAPI(title="Tools Hub", lifespan=lifespan)
 
 SERVER_DIR = Path(__file__).parent
 REPO_ROOT = SERVER_DIR.parent
@@ -64,12 +86,16 @@ from apps.stats.routes import router as stats_router
 register_app("Stats", "KB and scheduler analytics", "/stats", "📊")
 app.include_router(stats_router, prefix="/api/stats")
 
+from apps.dev_flow.routes import router as dev_flow_router
+register_app("Dev Flow", "Orchestration & gates", "/dev-flow", "🔄")
+app.include_router(dev_flow_router, prefix="/dev-flow/api")
+
 from apps.splanner.routes import router as splanner_router
 register_app("SPlanner", "Executive planning across work/family/personal", "/splanner", "🧭")
 app.include_router(splanner_router, prefix="/splanner")
 
 # Redirect /prefix → /prefix/ for all app router prefixes
-for _prefix in ["/workflow", "/scheduler", "/kb", "/telegram-bridge"]:
+for _prefix in ["/workflow", "/scheduler", "/kb", "/telegram-bridge", "/dev-flow"]:
     app.get(_prefix, include_in_schema=False)(
         lambda _p=_prefix: RedirectResponse(f"{_p}/", status_code=307)
     )
@@ -88,6 +114,12 @@ async def serve_stats_spa(path: str = ""):
 @app.get("/accounts", include_in_schema=False)
 @app.get("/accounts/{path:path}", include_in_schema=False)
 async def serve_accounts_spa(path: str = ""):
+    return FileResponse(str(_SPA_INDEX))
+
+
+@app.get("/dev-flow", include_in_schema=False)
+@app.get("/dev-flow/{path:path}", include_in_schema=False)
+async def serve_dev_flow_spa(path: str = ""):
     return FileResponse(str(_SPA_INDEX))
 
 

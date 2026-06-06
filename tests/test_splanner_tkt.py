@@ -168,24 +168,41 @@ def test_create_ticket_success_and_errors(client: TestClient, monkeypatch):
     assert unparseable.status_code == 502
 
 
-def test_connectors_route_lists_calendar_and_tkt(client: TestClient, tmp_path, monkeypatch):
+def test_connectors_route_lists_calendar_tkt_and_life_graph(client: TestClient, tmp_path, monkeypatch):
+    import apps.splanner.connectors.life_graph as life_graph_module
     import apps.splanner.connectors.tkt as tkt_module
 
     tkt_db_path = tmp_path / "backlog.db"
     create_tkt_db(tkt_db_path, [])
+    life_graph_db_path = tmp_path / "life-graph.db"
+    create_life_graph_db(life_graph_db_path, [])
     monkeypatch.setattr(tkt_module, "TKT_BACKLOG_DB_PATH", tkt_db_path)
+    monkeypatch.setattr(life_graph_module, "LIFE_GRAPH_DB_PATH", life_graph_db_path)
+    import apps.splanner.connectors.life_graph  # noqa: F401
     import apps.splanner.connectors.tkt  # noqa: F401
 
     response = client.get("/splanner/api/connectors")
 
     assert response.status_code == 200
-    assert response.json() == [
-        {"name": "calendar", "configured": False},
-        {"name": "tkt", "configured": True},
-    ]
+    by_name = {entry["name"]: entry["configured"] for entry in response.json()}
+    assert by_name["calendar"] is False
+    assert by_name["tkt"] is True
+    assert by_name["life-graph"] is True
 
 
 def datetime_from(value: str):
     from datetime import datetime
 
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def create_life_graph_db(path, rows: list[tuple[int, str, str, str, str, str | None]]) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE entities (id INTEGER PRIMARY KEY, entity_type TEXT NOT NULL, topic TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, invalid_at TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO entities (id, entity_type, topic, content, created_at, invalid_at) VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()

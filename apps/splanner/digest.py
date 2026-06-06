@@ -212,3 +212,76 @@ def draft_digest(week_start: str) -> dict | None:
         return None
     finally:
         db.close()
+
+
+def _digest_row_to_dict(row) -> dict:
+    return {
+        "id": row["id"],
+        "week_start": row["week_start"],
+        "state": row["state"],
+        "narrative_md": row["narrative_md"],
+        "kpi_deltas": json.loads(row["kpi_deltas"]),
+        "risks": json.loads(row["risks"]),
+        "nudges": json.loads(row["nudges"]),
+        "focus": json.loads(row["focus"]),
+        "created_at": row["created_at"],
+    }
+
+
+def draft_and_store(
+    week_start: str,
+    *,
+    kpi_func=compute_kpi_deltas,
+    draft_func=draft_digest,
+) -> dict | None:
+    db = get_db()
+    try:
+        kpi_deltas = kpi_func(db, week_start)
+        draft = draft_func(week_start)
+        if draft is None:
+            return None
+
+        payload = (
+            week_start,
+            "drafted",
+            draft["narrative_md"],
+            json.dumps(kpi_deltas),
+            json.dumps(draft["risks"]),
+            json.dumps(draft["nudges"]),
+            json.dumps(draft["focus"]),
+        )
+        existing = db.execute(
+            "SELECT id FROM digests WHERE week_start = ?",
+            (week_start,),
+        ).fetchone()
+        if existing is None:
+            cursor = db.execute(
+                "INSERT INTO digests (week_start, state, narrative_md, kpi_deltas, risks, nudges, focus) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                payload,
+            )
+            digest_id = cursor.lastrowid
+        else:
+            digest_id = existing["id"]
+            db.execute(
+                "UPDATE digests SET state = ?, narrative_md = ?, kpi_deltas = ?, risks = ?, nudges = ?, focus = ? "
+                "WHERE id = ?",
+                (
+                    "drafted",
+                    draft["narrative_md"],
+                    json.dumps(kpi_deltas),
+                    json.dumps(draft["risks"]),
+                    json.dumps(draft["nudges"]),
+                    json.dumps(draft["focus"]),
+                    digest_id,
+                ),
+            )
+        db.commit()
+        row = db.execute(
+            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
+            "FROM digests WHERE id = ?",
+            (digest_id,),
+        ).fetchone()
+        return _digest_row_to_dict(row)
+    finally:
+        db.close()

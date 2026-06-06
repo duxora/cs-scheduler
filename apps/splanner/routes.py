@@ -7,10 +7,11 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .capture import ingest_connector
 from .classify import classify_checkin
 from .connectors import ConnectorNotConfigured, get_connector, list_connectors
 from .db import get_db
-from .digest import compute_kpi_deltas, draft_digest
+from .digest import compute_kpi_deltas, draft_and_store, draft_digest
 
 router = APIRouter()
 
@@ -661,92 +662,21 @@ async def get_connectors():
 
 @router.post("/api/connectors/{name}/poll", response_model=ConnectorPollResult)
 async def poll_connector(name: str, background_tasks: BackgroundTasks):
+    if name == "life-graph":
+        from .connectors import life_graph as _life_graph  # noqa: F401
     if name == "tkt":
         from .connectors import tkt as _tkt  # noqa: F401
 
     connector = get_connector(name)
     if connector is None:
         raise HTTPException(status_code=404, detail="not found")
-
-    db = get_db()
     try:
-        last_seen = db.execute(
-            "SELECT MAX(created_at) AS created_at FROM checkins WHERE source = ?",
-            (name,),
-        ).fetchone()
-        if last_seen is not None and isinstance(last_seen["created_at"], str):
-            try:
-                since = datetime.fromisoformat(last_seen["created_at"].replace("Z", "+00:00"))
-            except ValueError:
-                since = datetime.now(timezone.utc) - timedelta(days=7)
-        else:
-            since = datetime.now(timezone.utc) - timedelta(days=7)
-
-        try:
-            signals = connector.poll(since)
-        except ConnectorNotConfigured as exc:
-            raise HTTPException(status_code=503, detail=f"{name} connector not configured") from exc
-
-        checkin_ids: list[int] = []
-        for signal in signals:
-            existing = db.execute(
-                "SELECT id FROM checkins WHERE source = ? AND source_ref = ?",
-                (name, signal.source_ref),
-            ).fetchone()
-            if existing is not None:
-                continue
-
-            resolved_project_id = None
-            resolved_objective_id = None
-            resolved_item_id = None
-            if signal.item_id is not None:
-                resolved_project_id, resolved_objective_id, resolved_item_id = _resolve_item_hierarchy(db, signal.item_id)
-
-            kind = signal.kind or "note"
-            should_classify = signal.kind is None
-            if signal.occurred_at is not None:
-                cursor = db.execute(
-                    "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        resolved_project_id,
-                        resolved_objective_id,
-                        resolved_item_id,
-                        signal.body,
-                        kind,
-                        name,
-                        signal.source_ref,
-                        0,
-                        signal.occurred_at,
-                    ),
-                )
-            else:
-                cursor = db.execute(
-                    "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        resolved_project_id,
-                        resolved_objective_id,
-                        resolved_item_id,
-                        signal.body,
-                        kind,
-                        name,
-                        signal.source_ref,
-                        0,
-                    ),
-                )
-            checkin_ids.append(cursor.lastrowid)
-            if should_classify:
-                background_tasks.add_task(classify_checkin, cursor.lastrowid)
-
-        db.commit()
-        return {
-            "polled": len(signals),
-            "inserted": len(checkin_ids),
-            "checkin_ids": checkin_ids,
-        }
-    finally:
-        db.close()
+        return ingest_connector(
+            connector,
+            lambda checkin_id: background_tasks.add_task(classify_checkin, checkin_id),
+        )
+    except ConnectorNotConfigured as exc:
+        raise HTTPException(status_code=503, detail=f"{name} connector not configured") from exc
 
 
 @router.post("/api/items/{item_id}/create-ticket")
@@ -909,58 +839,14 @@ async def update_item(item_id: int, payload: ItemUpdate):
 @router.post("/api/digest/draft", response_model=Digest)
 async def create_digest_draft(week_start: str | None = Query(default=None)):
     normalized_week_start = _normalize_week_start(week_start)
-
-    db = get_db()
-    try:
-        kpi_deltas = compute_kpi_deltas(db, normalized_week_start)
-        draft = draft_digest(normalized_week_start)
-        if draft is None:
-            raise HTTPException(status_code=502, detail="digest draft failed")
-
-        payload = (
-            normalized_week_start,
-            "drafted",
-            draft["narrative_md"],
-            json.dumps(kpi_deltas),
-            json.dumps(draft["risks"]),
-            json.dumps(draft["nudges"]),
-            json.dumps(draft["focus"]),
-        )
-        existing = db.execute(
-            "SELECT id FROM digests WHERE week_start = ?",
-            (normalized_week_start,),
-        ).fetchone()
-        if existing is None:
-            cursor = db.execute(
-                "INSERT INTO digests (week_start, state, narrative_md, kpi_deltas, risks, nudges, focus) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                payload,
-            )
-            digest_id = cursor.lastrowid
-        else:
-            digest_id = existing["id"]
-            db.execute(
-                "UPDATE digests SET state = ?, narrative_md = ?, kpi_deltas = ?, risks = ?, nudges = ?, focus = ? "
-                "WHERE id = ?",
-                (
-                    "drafted",
-                    draft["narrative_md"],
-                    json.dumps(kpi_deltas),
-                    json.dumps(draft["risks"]),
-                    json.dumps(draft["nudges"]),
-                    json.dumps(draft["focus"]),
-                    digest_id,
-                ),
-            )
-        db.commit()
-        row = db.execute(
-            "SELECT id, week_start, state, narrative_md, kpi_deltas, risks, nudges, focus, created_at "
-            "FROM digests WHERE id = ?",
-            (digest_id,),
-        ).fetchone()
-        return _digest_row_to_dict(row)
-    finally:
-        db.close()
+    digest = draft_and_store(
+        normalized_week_start,
+        kpi_func=compute_kpi_deltas,
+        draft_func=draft_digest,
+    )
+    if digest is None:
+        raise HTTPException(status_code=502, detail="digest draft failed")
+    return digest
 
 
 @router.get("/api/digest/latest", response_model=Digest)
