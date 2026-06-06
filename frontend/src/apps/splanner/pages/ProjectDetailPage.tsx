@@ -111,6 +111,8 @@ export default function ProjectDetailPage() {
   const [composerScope, setComposerScope] = useState<CheckinComposerScope | null>(null)
   const [connectors, setConnectors] = useState<ConnectorStatus[]>([])
   const [syncResult, setSyncResult] = useState<string | null>(null)
+  const [isRenamingProject, setIsRenamingProject] = useState(false)
+  const [projectNameDraft, setProjectNameDraft] = useState('')
 
   async function loadProjectDetail(nextProjectId: number) {
     setIsLoading(true)
@@ -181,6 +183,11 @@ export default function ProjectDetailPage() {
     return () => window.clearTimeout(timeoutId)
   }, [syncResult])
 
+  useEffect(() => {
+    if (!detail) return
+    setProjectNameDraft(detail.project.name)
+  }, [detail])
+
   async function handleCreateObjective(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (projectIdValue === null) return
@@ -228,6 +235,39 @@ export default function ProjectDetailPage() {
       navigate('/splanner', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to archive project.')
+    } finally {
+      setActiveAction(null)
+    }
+  }
+
+  function startRenamingProject() {
+    if (!detail) return
+    setProjectNameDraft(detail.project.name)
+    setIsRenamingProject(true)
+  }
+
+  function cancelRenamingProject() {
+    if (detail) setProjectNameDraft(detail.project.name)
+    setIsRenamingProject(false)
+  }
+
+  async function handleRenameProject() {
+    if (!detail || projectIdValue === null) return
+    const name = projectNameDraft.trim()
+    if (!name || name === detail.project.name) {
+      setProjectNameDraft(detail.project.name)
+      setIsRenamingProject(false)
+      return
+    }
+
+    setActiveAction('rename-project')
+    setError(null)
+    try {
+      await splannerApi.updateProject(detail.project.id, { name })
+      await loadProjectDetail(projectIdValue)
+      setIsRenamingProject(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to rename project.')
     } finally {
       setActiveAction(null)
     }
@@ -335,7 +375,54 @@ export default function ProjectDetailPage() {
                 <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${CONTEXT_STYLES[detail.project.context]}`} aria-hidden="true" />
                 <span>{formatContextLabel(detail.project.context)}</span>
               </div>
-              <h1 className="text-3xl font-semibold tracking-tight text-gray-50">{detail.project.name}</h1>
+              {isRenamingProject ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={projectNameDraft}
+                    onChange={(event) => setProjectNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void handleRenameProject()
+                      } else if (event.key === 'Escape') {
+                        event.preventDefault()
+                        cancelRenamingProject()
+                      }
+                    }}
+                    autoFocus
+                    disabled={activeAction === 'rename-project'}
+                    className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-3xl font-semibold tracking-tight text-gray-50 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleRenameProject()}
+                    disabled={activeAction === 'rename-project'}
+                    className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {activeAction === 'rename-project' ? 'Saving…' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={cancelRenamingProject}
+                    disabled={activeAction === 'rename-project'}
+                    className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <h1 className="text-3xl font-semibold tracking-tight text-gray-50">{detail.project.name}</h1>
+                  <button
+                    type="button"
+                    onClick={startRenamingProject}
+                    aria-label="Rename project"
+                    className="text-sm text-gray-500 transition-colors hover:text-gray-200"
+                  >
+                    ✎
+                  </button>
+                </div>
+              )}
               <p className="mt-2 text-sm text-gray-400">{totals}</p>
             </div>
 
