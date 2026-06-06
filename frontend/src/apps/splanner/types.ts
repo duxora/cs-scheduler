@@ -66,6 +66,8 @@ export interface Checkin {
   source: CheckinSource
   source_ref: string | null
   ai_classified: boolean
+  suggested_level: 'project' | 'objective' | 'item' | null
+  suggested_id: number | null
   created_at: string
 }
 
@@ -123,7 +125,14 @@ export interface UpdateItemPayload {
 
 export interface CreateCheckinPayload {
   body: string
-  kind: CheckinKind
+  kind?: CheckinKind
+  project_id?: number | null
+  objective_id?: number | null
+  item_id?: number | null
+}
+
+export interface UpdateCheckinPayload {
+  kind?: CheckinKind
   project_id?: number | null
   objective_id?: number | null
   item_id?: number | null

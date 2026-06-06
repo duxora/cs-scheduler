@@ -12,6 +12,7 @@ import type {
   Project,
   ProjectDetail,
   UpdateItemPayload,
+  UpdateCheckinPayload,
   UpdateObjectivePayload,
   UpdateProjectPayload,
 } from '../types'
@@ -99,6 +100,13 @@ export const splannerApi = {
   createCheckin: (payload: CreateCheckinPayload) =>
     fetchJson<Checkin>('/checkins', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+
+  updateCheckin: (checkinId: number, payload: UpdateCheckinPayload) =>
+    fetchJson<Checkin>(`/checkins/${checkinId}`, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     }),

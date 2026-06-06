@@ -2,7 +2,16 @@ import { useEffect, useRef, useState } from 'react'
 import { splannerApi } from '../lib/api'
 import type { Checkin, CheckinKind, CreateCheckinPayload } from '../types'
 
-const KIND_OPTIONS: CheckinKind[] = ['note', 'win', 'risk', 'decision', 'blocked']
+type CheckinMode = 'auto' | CheckinKind
+
+const KIND_OPTIONS: Array<{ value: CheckinMode; label: string }> = [
+  { value: 'auto', label: 'Auto (AI)' },
+  { value: 'note', label: 'note' },
+  { value: 'win', label: 'win' },
+  { value: 'risk', label: 'risk' },
+  { value: 'decision', label: 'decision' },
+  { value: 'blocked', label: 'blocked' },
+]
 
 export interface CheckinComposerScope {
   projectId?: number
@@ -16,17 +25,22 @@ interface CheckinComposerProps {
   onCreated: (checkin: Checkin) => Promise<void> | void
 }
 
-function buildPayload(scope: CheckinComposerScope, body: string, kind: CheckinKind): CreateCheckinPayload {
+function buildPayload(scope: CheckinComposerScope, body: string, kind: CheckinMode): CreateCheckinPayload {
+  const payload: CreateCheckinPayload = kind === 'auto' ? { body } : { body, kind }
+
   if (scope.itemId !== undefined) {
-    return { body, kind, item_id: scope.itemId }
+    payload.item_id = scope.itemId
+    return payload
   }
   if (scope.objectiveId !== undefined) {
-    return { body, kind, objective_id: scope.objectiveId }
+    payload.objective_id = scope.objectiveId
+    return payload
   }
   if (scope.projectId !== undefined) {
-    return { body, kind, project_id: scope.projectId }
+    payload.project_id = scope.projectId
+    return payload
   }
-  return { body, kind }
+  return payload
 }
 
 function broadenScope(scope: CheckinComposerScope): CheckinComposerScope {
@@ -57,8 +71,10 @@ function describeScope(scope: CheckinComposerScope): string {
 
 export default function CheckinComposer({ scope, onCreated }: CheckinComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const pollTimerRef = useRef<number | null>(null)
+  const pollSessionRef = useRef(0)
   const [body, setBody] = useState('')
-  const [kind, setKind] = useState<CheckinKind>('note')
+  const [kind, setKind] = useState<CheckinMode>('auto')
   const [isOpen, setIsOpen] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -100,6 +116,67 @@ export default function CheckinComposer({ scope, onCreated }: CheckinComposerPro
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current !== null) {
+        window.clearTimeout(pollTimerRef.current)
+      }
+    }
+  }, [])
+
+  function stopPolling() {
+    pollSessionRef.current += 1
+    if (pollTimerRef.current !== null) {
+      window.clearTimeout(pollTimerRef.current)
+      pollTimerRef.current = null
+    }
+  }
+
+  function startPolling(checkin: Checkin) {
+    if (checkin.project_id === null) return
+
+    stopPolling()
+    const sessionId = pollSessionRef.current
+    const startedAt = Date.now()
+
+    const poll = async () => {
+      try {
+        const checkins = await splannerApi.listCheckins({ projectId: checkin.project_id ?? undefined })
+        const current = checkins.find((entry) => entry.id === checkin.id)
+        await onCreated(current ?? checkin)
+
+        if (
+          current === undefined ||
+          current.ai_classified ||
+          current.suggested_level !== null ||
+          current.suggested_id !== null ||
+          Date.now() - startedAt >= 90_000
+        ) {
+          if (pollSessionRef.current === sessionId) {
+            pollTimerRef.current = null
+          }
+          return
+        }
+      } catch {
+        if (Date.now() - startedAt >= 90_000) {
+          if (pollSessionRef.current === sessionId) {
+            pollTimerRef.current = null
+          }
+          return
+        }
+      }
+
+      if (pollSessionRef.current !== sessionId) return
+      pollTimerRef.current = window.setTimeout(() => {
+        void poll()
+      }, 4000)
+    }
+
+    pollTimerRef.current = window.setTimeout(() => {
+      void poll()
+    }, 4000)
+  }
+
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const nextBody = body.trim()
@@ -110,8 +187,13 @@ export default function CheckinComposer({ scope, onCreated }: CheckinComposerPro
     try {
       const checkin = await splannerApi.createCheckin(buildPayload(activeScope, nextBody, kind))
       setBody('')
-      setKind('note')
+      setKind('auto')
       await onCreated(checkin)
+      if (kind === 'auto') {
+        startPolling(checkin)
+      } else {
+        stopPolling()
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create check-in.')
     } finally {
@@ -141,12 +223,12 @@ export default function CheckinComposer({ scope, onCreated }: CheckinComposerPro
           <div className="grid gap-3 md:grid-cols-[140px_minmax(0,1fr)]">
             <select
               value={kind}
-              onChange={(event) => setKind(event.target.value as CheckinKind)}
+              onChange={(event) => setKind(event.target.value as CheckinMode)}
               className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none"
             >
               {KIND_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
+                <option key={option.value} value={option.value}>
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -167,7 +249,9 @@ export default function CheckinComposer({ scope, onCreated }: CheckinComposerPro
           )}
 
           <div className="flex items-center justify-between gap-3">
-            <span className="text-xs text-gray-500">Manual classification is required in this slice.</span>
+            <span className="text-xs text-gray-500">
+              {kind === 'auto' ? 'AI will classify in the background after posting.' : 'Posting with explicit kind.'}
+            </span>
             <button
               type="submit"
               disabled={isSubmitting}
