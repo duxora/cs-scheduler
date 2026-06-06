@@ -9,6 +9,8 @@ class RawSignal:
     body: str
     source_ref: str
     occurred_at: str | None
+    kind: str | None = None
+    item_id: int | None = None
 
 
 class Connector(Protocol):
@@ -35,6 +37,5 @@ def get_connector(name: str) -> Connector | None:
 
 def list_connectors() -> list[Connector]:
     return list(_REGISTRY.values())
-
 
 from .calendar import calendar_connector  # noqa: E402,F401

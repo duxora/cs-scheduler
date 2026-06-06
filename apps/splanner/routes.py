@@ -132,6 +132,10 @@ class ConnectorPollResult(BaseModel):
     checkin_ids: list[int]
 
 
+class CreateTicketPayload(BaseModel):
+    tkt_project: str | None = None
+
+
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -247,6 +251,17 @@ def _connector_is_configured(connector) -> bool:
     if callable(checker):
         return bool(checker())
     return True
+
+
+def _resolve_item_hierarchy(db, item_id: int) -> tuple[int, int, int]:
+    item = db.execute(
+        "SELECT items.id AS item_id, items.objective_id AS objective_id, objectives.project_id AS project_id "
+        "FROM items JOIN objectives ON objectives.id = items.objective_id WHERE items.id = ?",
+        (item_id,),
+    ).fetchone()
+    if item is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return item["project_id"], item["objective_id"], item["item_id"]
 
 
 def _resolve_checkin_links(
@@ -646,6 +661,9 @@ async def get_connectors():
 
 @router.post("/api/connectors/{name}/poll", response_model=ConnectorPollResult)
 async def poll_connector(name: str, background_tasks: BackgroundTasks):
+    if name == "tkt":
+        from .connectors import tkt as _tkt  # noqa: F401
+
     connector = get_connector(name)
     if connector is None:
         raise HTTPException(status_code=404, detail="not found")
@@ -678,20 +696,48 @@ async def poll_connector(name: str, background_tasks: BackgroundTasks):
             if existing is not None:
                 continue
 
+            resolved_project_id = None
+            resolved_objective_id = None
+            resolved_item_id = None
+            if signal.item_id is not None:
+                resolved_project_id, resolved_objective_id, resolved_item_id = _resolve_item_hierarchy(db, signal.item_id)
+
+            kind = signal.kind or "note"
+            should_classify = signal.kind is None
             if signal.occurred_at is not None:
                 cursor = db.execute(
-                    "INSERT INTO checkins (body, kind, source, source_ref, ai_classified, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (signal.body, "note", name, signal.source_ref, 0, signal.occurred_at),
+                    "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        resolved_project_id,
+                        resolved_objective_id,
+                        resolved_item_id,
+                        signal.body,
+                        kind,
+                        name,
+                        signal.source_ref,
+                        0,
+                        signal.occurred_at,
+                    ),
                 )
             else:
                 cursor = db.execute(
-                    "INSERT INTO checkins (body, kind, source, source_ref, ai_classified) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (signal.body, "note", name, signal.source_ref, 0),
+                    "INSERT INTO checkins (project_id, objective_id, item_id, body, kind, source, source_ref, ai_classified) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        resolved_project_id,
+                        resolved_objective_id,
+                        resolved_item_id,
+                        signal.body,
+                        kind,
+                        name,
+                        signal.source_ref,
+                        0,
+                    ),
                 )
             checkin_ids.append(cursor.lastrowid)
-            background_tasks.add_task(classify_checkin, cursor.lastrowid)
+            if should_classify:
+                background_tasks.add_task(classify_checkin, cursor.lastrowid)
 
         db.commit()
         return {
@@ -699,6 +745,69 @@ async def poll_connector(name: str, background_tasks: BackgroundTasks):
             "inserted": len(checkin_ids),
             "checkin_ids": checkin_ids,
         }
+    finally:
+        db.close()
+
+
+@router.post("/api/items/{item_id}/create-ticket")
+async def create_ticket_for_item(item_id: int, payload: CreateTicketPayload):
+    from .connectors.tkt import TktCreateError, create_ticket
+
+    db = get_db()
+    try:
+        row = db.execute(
+            """
+            SELECT
+                items.id AS id,
+                items.objective_id AS objective_id,
+                items.name AS name,
+                items.status AS status,
+                items.eta AS eta,
+                items.blockers AS blockers,
+                items.tkt_ticket_id AS tkt_ticket_id,
+                items.created_at AS created_at,
+                objectives.name AS objective_name,
+                projects.name AS project_name,
+                projects.context AS project_context
+            FROM items
+            JOIN objectives ON objectives.id = items.objective_id
+            JOIN projects ON projects.id = objectives.project_id
+            WHERE items.id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if row["tkt_ticket_id"] is not None:
+            raise HTTPException(status_code=409, detail="item already linked")
+        if row["project_context"] != "work":
+            raise HTTPException(status_code=400, detail="tkt linking is work-context only")
+
+        desc_lines = [
+            f"Project: {row['project_name']}",
+            f"Objective: {row['objective_name']}",
+            f"Item: {row['name']}",
+        ]
+        if row["eta"]:
+            desc_lines.append(f"ETA: {row['eta']}")
+        if row["blockers"]:
+            desc_lines.append(f"Blockers: {row['blockers']}")
+
+        try:
+            ticket_id = create_ticket(row["name"], "\n".join(desc_lines), payload.tkt_project)
+        except TktCreateError as exc:
+            raise HTTPException(status_code=502, detail="tkt create failed") from exc
+
+        db.execute(
+            "UPDATE items SET tkt_ticket_id = ? WHERE id = ?",
+            (ticket_id, item_id),
+        )
+        db.commit()
+        updated = db.execute(
+            "SELECT id, objective_id, name, status, eta, blockers, tkt_ticket_id, created_at FROM items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        return _item_row_to_dict(updated)
     finally:
         db.close()
 
