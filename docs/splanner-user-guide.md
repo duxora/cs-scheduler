@@ -25,11 +25,15 @@ Two rules make the model work:
 
 ## Getting started (10 minutes)
 
+![SPlanner dashboard — quick check-in, new project, KPI tiles, ranked project cards](images/splanner/dashboard.png)
+
 1. **Create 3–7 projects** on the dashboard, one per real initiative, spread across contexts. Set priority honestly — the dashboard ranks by it (blocked projects auto-boost to the top).
 2. **Give each project 1–3 objectives, and make them measurable.** The KPI delta strip in the weekly digest only shows objectives with a numeric `current` value. "Ship migration" gives the AI nothing; `metric: slices shipped, target: 9, current: 4` gives it a week-over-week arrow.
 3. **Add items only for active objectives.** Items are execution altitude — what you'd actually do this week. Stale item lists rot; keep them short.
 4. **For work projects, push the whole objective into dev-flow with one click** — **Create epic** on the objective header. It creates a tkt epic, child tickets for every unlinked item, and adopts any already-linked tickets into the epic. From then on, every item you add gets its ticket created *inside* the epic automatically, and completing a ticket flips the item to done and logs a `win` check-in — zero bookkeeping.
 5. Prefer ticket-by-ticket instead? "Create tkt" on an item row still works standalone; tickets created before the epic exists get adopted when you create it.
+
+![Project detail — objectives with metric lines, items with per-item actions, quick check-in and connector sources on the right](images/splanner/project-detail.png)
 
 ---
 
@@ -89,6 +93,8 @@ Dedup is by `(source, source_ref)` and each connector keeps a watermark, so sync
 ## Epics — the objective ↔ dev-flow bridge (work context)
 
 **Create epic** on an objective header opens a small panel: the target tkt project is pre-resolved (from where the objective's existing tickets live, else by name match), and the button reads exactly what will happen — *"Create epic + N tickets"*. "Customize items" lets you cherry-pick, but the default is the right call: all unlinked items become child tickets, all linked ones are adopted.
+
+![Create epic panel — pre-resolved tkt project, live ticket count, customize-items expander](images/splanner/epic-panel.png)
 
 What it buys you:
 
