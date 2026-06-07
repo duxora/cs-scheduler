@@ -12,6 +12,7 @@ import type {
   ObjectiveStatus,
   PollResult,
   ProjectDetail,
+  TktProject,
 } from '../types'
 
 const CONTEXT_STYLES: Record<Context, string> = {
@@ -45,6 +46,16 @@ interface ObjectiveFormState {
 interface ItemFormState {
   name: string
   eta: string
+}
+
+interface EpicPanelState {
+  tktProjects: TktProject[]
+  selectedProject: string
+  // item_ids and adopt_item_ids as checked sets
+  checkedCreate: Set<number>
+  checkedAdopt: Set<number>
+  showCustomize: boolean
+  loading: boolean
 }
 
 const EMPTY_OBJECTIVE_FORM: ObjectiveFormState = {
@@ -113,6 +124,8 @@ export default function ProjectDetailPage() {
   const [syncResult, setSyncResult] = useState<string | null>(null)
   const [isRenamingProject, setIsRenamingProject] = useState(false)
   const [projectNameDraft, setProjectNameDraft] = useState('')
+  // epic panel: keyed by objectiveId, null means panel closed
+  const [epicPanels, setEpicPanels] = useState<Record<number, EpicPanelState | null>>({})
 
   async function loadProjectDetail(nextProjectId: number) {
     setIsLoading(true)
@@ -340,6 +353,65 @@ export default function ProjectDetailPage() {
     }
   }
 
+  async function openEpicPanel(objective: Objective) {
+    const objId = objective.id
+    // lazy-fetch tkt projects only on first open
+    setEpicPanels((prev) => ({
+      ...prev,
+      [objId]: {
+        tktProjects: [],
+        selectedProject: '',
+        checkedCreate: new Set(objective.items.filter((i) => i.tkt_ticket_id === null).map((i) => i.id)),
+        checkedAdopt: new Set(objective.items.filter((i) => i.tkt_ticket_id !== null).map((i) => i.id)),
+        showCustomize: false,
+        loading: true,
+      },
+    }))
+    try {
+      const resp = await splannerApi.listTktProjects(objId)
+      setEpicPanels((prev) => {
+        const panel = prev[objId]
+        if (!panel) return prev
+        return {
+          ...prev,
+          [objId]: {
+            ...panel,
+            tktProjects: resp.projects,
+            selectedProject: resp.suggested ?? (resp.projects[0]?.id ?? ''),
+            loading: false,
+          },
+        }
+      })
+    } catch (err) {
+      setEpicPanels((prev) => ({ ...prev, [objId]: null }))
+      setError(err instanceof Error ? err.message : 'Failed to load tkt projects.')
+    }
+  }
+
+  function closeEpicPanel(objectiveId: number) {
+    setEpicPanels((prev) => ({ ...prev, [objectiveId]: null }))
+  }
+
+  async function handleCreateEpic(objective: Objective) {
+    const panel = epicPanels[objective.id]
+    if (!panel || projectIdValue === null) return
+    setActiveAction(`create-epic-${objective.id}`)
+    setError(null)
+    try {
+      await splannerApi.createEpic(objective.id, {
+        tkt_project: panel.selectedProject,
+        item_ids: [...panel.checkedCreate],
+        adopt_item_ids: [...panel.checkedAdopt],
+      })
+      setEpicPanels((prev) => ({ ...prev, [objective.id]: null }))
+      await loadProjectDetail(projectIdValue)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create epic.')
+    } finally {
+      setActiveAction(null)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-full items-center justify-center bg-gray-950 text-sm text-gray-500">
@@ -547,7 +619,151 @@ export default function ProjectDetailPage() {
                       >
                         check-in
                       </button>
+                      {detail.project.context === 'work' && (
+                        objective.tkt_epic_id !== null ? (
+                          <span className="rounded-full border border-gray-700 bg-gray-900 px-2.5 py-1 text-[11px] text-gray-300">
+                            epic #{objective.tkt_epic_id}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); void openEpicPanel(objective) }}
+                            className="rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-gray-600 hover:text-gray-100"
+                          >
+                            Create epic
+                          </button>
+                        )
+                      )}
                     </div>
+
+                    {(() => {
+                      const panel = epicPanels[objective.id]
+                      if (!panel) return null
+                      const epicBusy = activeAction === `create-epic-${objective.id}`
+                      const unlinkedItems = objective.items.filter((i) => i.tkt_ticket_id === null)
+                      const linkedItems = objective.items.filter((i) => i.tkt_ticket_id !== null)
+                      const createCount = panel.checkedCreate.size
+                      const adoptCount = panel.checkedAdopt.size
+                      return (
+                        <div className="mx-5 mb-2 rounded-xl border border-gray-800 bg-gray-950/70 p-4">
+                          <div className="mb-3 flex items-center justify-between">
+                            <h3 className="text-sm font-medium text-gray-100">Create epic</h3>
+                            <button
+                              type="button"
+                              onClick={() => closeEpicPanel(objective.id)}
+                              disabled={epicBusy}
+                              className="text-xs text-gray-500 hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                          {panel.loading ? (
+                            <p className="text-xs text-gray-500">Loading projects…</p>
+                          ) : (
+                            <>
+                              <div className="mb-3">
+                                <label className="mb-1 block text-xs text-gray-500">tkt project</label>
+                                <select
+                                  value={panel.selectedProject}
+                                  onChange={(e) =>
+                                    setEpicPanels((prev) => {
+                                      const p = prev[objective.id]
+                                      if (!p) return prev
+                                      return { ...prev, [objective.id]: { ...p, selectedProject: e.target.value } }
+                                    })
+                                  }
+                                  disabled={epicBusy}
+                                  className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {panel.tktProjects.map((p) => (
+                                    <option key={p.id} value={p.id}>{p.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <p className="mb-3 text-xs text-gray-400">
+                                {createCount} item{createCount === 1 ? '' : 's'} will become child tickets
+                                {adoptCount > 0 ? ` · ${adoptCount} adopted` : ''}
+                              </p>
+                              <div className="mb-3 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEpicPanels((prev) => {
+                                      const p = prev[objective.id]
+                                      if (!p) return prev
+                                      return { ...prev, [objective.id]: { ...p, showCustomize: !p.showCustomize } }
+                                    })
+                                  }
+                                  disabled={epicBusy}
+                                  className="text-[11px] text-gray-500 underline hover:text-gray-300 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  {panel.showCustomize ? 'Hide items' : 'Customize items'}
+                                </button>
+                              </div>
+                              {panel.showCustomize && (
+                                <div className="mb-3 space-y-2">
+                                  {unlinkedItems.map((item) => (
+                                    <label key={item.id} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={panel.checkedCreate.has(item.id)}
+                                        disabled={epicBusy}
+                                        onChange={(e) =>
+                                          setEpicPanels((prev) => {
+                                            const p = prev[objective.id]
+                                            if (!p) return prev
+                                            const next = new Set(p.checkedCreate)
+                                            if (e.target.checked) next.add(item.id)
+                                            else next.delete(item.id)
+                                            return { ...prev, [objective.id]: { ...p, checkedCreate: next } }
+                                          })
+                                        }
+                                        className="accent-blue-500"
+                                      />
+                                      {item.name}
+                                    </label>
+                                  ))}
+                                  {linkedItems.map((item) => (
+                                    <label key={item.id} className="flex items-center gap-2 text-sm text-gray-300 cursor-pointer">
+                                      <input
+                                        type="checkbox"
+                                        checked={panel.checkedAdopt.has(item.id)}
+                                        disabled={epicBusy}
+                                        onChange={(e) =>
+                                          setEpicPanels((prev) => {
+                                            const p = prev[objective.id]
+                                            if (!p) return prev
+                                            const next = new Set(p.checkedAdopt)
+                                            if (e.target.checked) next.add(item.id)
+                                            else next.delete(item.id)
+                                            return { ...prev, [objective.id]: { ...p, checkedAdopt: next } }
+                                          })
+                                        }
+                                        className="accent-blue-500"
+                                      />
+                                      {item.name}
+                                      <span className="text-[11px] text-gray-500">adopt #{item.tkt_ticket_id}</span>
+                                    </label>
+                                  ))}
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => void handleCreateEpic(objective)}
+                                disabled={epicBusy || !panel.selectedProject}
+                                className="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-200 transition-colors hover:bg-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {epicBusy
+                                  ? 'Creating…'
+                                  : createCount > 0
+                                  ? `Create epic + ${createCount} ticket${createCount === 1 ? '' : 's'}`
+                                  : 'Create epic'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )
+                    })()}
 
                     {isExpanded && (
                       <div className="border-t border-gray-800 px-5 py-4">
@@ -606,22 +822,31 @@ export default function ProjectDetailPage() {
                                         <p className="mt-2 text-sm text-red-300">Blockers: {item.blockers}</p>
                                       )}
                                     </div>
-                                    <select
-                                      value={item.status}
-                                      onChange={(event) =>
-                                        void handleItemStatusChange(
-                                          objective.id,
-                                          item.id,
-                                          event.target.value as ItemStatus,
-                                        )}
-                                      disabled={itemBusy}
-                                      className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      <option value="todo">todo</option>
-                                      <option value="doing">doing</option>
-                                      <option value="blocked">blocked</option>
-                                      <option value="done">done</option>
-                                    </select>
+                                    {item.tkt_ticket_id !== null ? (
+                                      <span
+                                        className={`text-sm ${ITEM_STATUS_STYLES[item.status]}`}
+                                        title={`synced from tkt #${item.tkt_ticket_id}`}
+                                      >
+                                        {item.status}
+                                      </span>
+                                    ) : (
+                                      <select
+                                        value={item.status}
+                                        onChange={(event) =>
+                                          void handleItemStatusChange(
+                                            objective.id,
+                                            item.id,
+                                            event.target.value as ItemStatus,
+                                          )}
+                                        disabled={itemBusy}
+                                        className="rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-gray-100 focus:border-gray-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        <option value="todo">todo</option>
+                                        <option value="doing">doing</option>
+                                        <option value="blocked">blocked</option>
+                                        <option value="done">done</option>
+                                      </select>
+                                    )}
                                   </div>
                                 </div>
                               )

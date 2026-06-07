@@ -137,6 +137,12 @@ class CreateTicketPayload(BaseModel):
     tkt_project: str | None = None
 
 
+class CreateEpicPayload(BaseModel):
+    tkt_project: str
+    item_ids: list[int] | None = None
+    adopt_item_ids: list[int] | None = None
+
+
 def _project_row_to_dict(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -195,6 +201,7 @@ def _objective_row_to_dict(row: sqlite3.Row) -> dict:
         "unit": row["unit"],
         "deadline": row["deadline"],
         "status": row["status"],
+        "tkt_epic_id": row["tkt_epic_id"] if "tkt_epic_id" in row.keys() else None,
         "created_at": row["created_at"],
         "items": [],
     }
@@ -456,7 +463,7 @@ async def get_project_detail(project_id: int):
             raise HTTPException(status_code=404, detail="not found")
 
         objective_rows = db.execute(
-            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, created_at "
+            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, tkt_epic_id, created_at "
             "FROM objectives WHERE project_id = ? ORDER BY id DESC",
             (project_id,),
         ).fetchall()
@@ -511,7 +518,7 @@ async def create_objective(payload: ObjectiveCreate):
         )
         db.commit()
         row = db.execute(
-            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, created_at "
+            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, tkt_epic_id, created_at "
             "FROM objectives WHERE id = ?",
             (cursor.lastrowid,),
         ).fetchone()
@@ -549,7 +556,7 @@ async def update_objective(objective_id: int, payload: ObjectiveUpdate):
         db.execute(f"UPDATE objectives SET {', '.join(assignments)} WHERE id = ?", tuple(params))
         db.commit()
         row = db.execute(
-            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, created_at "
+            "SELECT id, project_id, name, metric, target, current, unit, deadline, status, tkt_epic_id, created_at "
             "FROM objectives WHERE id = ?",
             (objective_id,),
         ).fetchone()
@@ -681,7 +688,12 @@ async def poll_connector(name: str, background_tasks: BackgroundTasks):
 
 @router.post("/api/items/{item_id}/create-ticket")
 async def create_ticket_for_item(item_id: int, payload: CreateTicketPayload):
-    from .connectors.tkt import TktCreateError, create_ticket
+    from .connectors.tkt import (
+        TktCreateError,
+        create_ticket,
+        create_ticket_with_parent,
+        get_epic_project,
+    )
 
     db = get_db()
     try:
@@ -697,6 +709,7 @@ async def create_ticket_for_item(item_id: int, payload: CreateTicketPayload):
                 items.tkt_ticket_id AS tkt_ticket_id,
                 items.created_at AS created_at,
                 objectives.name AS objective_name,
+                objectives.tkt_epic_id AS tkt_epic_id,
                 projects.name AS project_name,
                 projects.context AS project_context
             FROM items
@@ -723,8 +736,24 @@ async def create_ticket_for_item(item_id: int, payload: CreateTicketPayload):
         if row["blockers"]:
             desc_lines.append(f"Blockers: {row['blockers']}")
 
+        epic_id = row["tkt_epic_id"]
         try:
-            ticket_id = create_ticket(row["name"], "\n".join(desc_lines), payload.tkt_project)
+            if epic_id is not None:
+                # Objective is linked to an epic — create as child ticket, ignore payload.tkt_project
+                epic_project = get_epic_project(epic_id)
+                if epic_project is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="could not resolve tkt project for epic",
+                    )
+                ticket_id = create_ticket_with_parent(
+                    row["name"],
+                    "\n".join(desc_lines),
+                    epic_project,
+                    epic_id,
+                )
+            else:
+                ticket_id = create_ticket(row["name"], "\n".join(desc_lines), payload.tkt_project)
         except TktCreateError as exc:
             raise HTTPException(status_code=502, detail="tkt create failed") from exc
 
@@ -937,5 +966,224 @@ async def approve_digest(digest_id: int):
             (digest_id,),
         ).fetchone()
         return _digest_row_to_dict(row)
+    finally:
+        db.close()
+
+
+@router.get("/api/tkt/projects")
+async def list_tkt_projects_route(suggest_for_objective: int | None = Query(default=None)):
+    from .connectors.tkt import list_tkt_projects
+
+    projects = list_tkt_projects()
+
+    suggested: str | None = None
+    if suggest_for_objective is not None:
+        db = get_db()
+        try:
+            objective = db.execute(
+                "SELECT objectives.id, objectives.name, projects.name AS project_name "
+                "FROM objectives JOIN projects ON projects.id = objectives.project_id "
+                "WHERE objectives.id = ?",
+                (suggest_for_objective,),
+            ).fetchone()
+            if objective is not None:
+                # (1) Most common tkt project among this objective's linked items' tickets
+                item_rows = db.execute(
+                    "SELECT items.tkt_ticket_id FROM items WHERE items.objective_id = ? "
+                    "AND items.tkt_ticket_id IS NOT NULL",
+                    (suggest_for_objective,),
+                ).fetchall()
+                ticket_ids = [r["tkt_ticket_id"] for r in item_rows]
+                if ticket_ids:
+                    from .connectors.tkt import TKT_BACKLOG_DB_PATH
+                    import sqlite3 as _sqlite3
+                    if TKT_BACKLOG_DB_PATH.is_file():
+                        backlog = _sqlite3.connect(
+                            f"file:{TKT_BACKLOG_DB_PATH}?mode=ro", uri=True
+                        )
+                        backlog.row_factory = _sqlite3.Row
+                        try:
+                            placeholders = ",".join("?" for _ in ticket_ids)
+                            tkt_rows = backlog.execute(
+                                f"SELECT project_id FROM tasks WHERE id IN ({placeholders})",
+                                tuple(ticket_ids),
+                            ).fetchall()
+                        finally:
+                            backlog.close()
+                        if tkt_rows:
+                            from collections import Counter
+                            counts = Counter(
+                                str(r["project_id"]) for r in tkt_rows if r["project_id"] is not None
+                            )
+                            if counts:
+                                suggested = counts.most_common(1)[0][0]
+
+                # (2) Case-insensitive name match against tkt project id or name
+                if suggested is None and objective is not None:
+                    splanner_name = objective["project_name"].lower()
+                    for p in projects:
+                        if p["id"].lower() == splanner_name or p["name"].lower() == splanner_name:
+                            suggested = p["id"]
+                            break
+        finally:
+            db.close()
+
+    return {"projects": projects, "suggested": suggested}
+
+
+def _objective_full_dict(db, objective_id: int) -> dict:
+    """Return the full objective dict (same shape as project-detail) including items and tkt_epic_id."""
+    row = db.execute(
+        "SELECT id, project_id, name, metric, target, current, unit, deadline, status, tkt_epic_id, created_at "
+        "FROM objectives WHERE id = ?",
+        (objective_id,),
+    ).fetchone()
+    if row is None:
+        return {}
+    obj = _objective_row_to_dict(row)
+    item_rows = db.execute(
+        "SELECT id, objective_id, name, status, eta, blockers, tkt_ticket_id, created_at "
+        "FROM items WHERE objective_id = ? ORDER BY id DESC",
+        (objective_id,),
+    ).fetchall()
+    obj["items"] = [_item_row_to_dict(r) for r in item_rows]
+    return obj
+
+
+def _build_item_desc(project_name: str, objective_name: str, item: sqlite3.Row) -> str:
+    lines = [
+        f"Project: {project_name}",
+        f"Objective: {objective_name}",
+        f"Item: {item['name']}",
+    ]
+    if item["eta"]:
+        lines.append(f"ETA: {item['eta']}")
+    if item["blockers"]:
+        lines.append(f"Blockers: {item['blockers']}")
+    return "\n".join(lines)
+
+
+@router.post("/api/objectives/{objective_id}/create-epic")
+async def create_epic_for_objective(objective_id: int, payload: CreateEpicPayload):
+    from .connectors.tkt import (
+        TktCreateError,
+        adopt_ticket,
+        create_epic,
+        create_ticket_with_parent,
+    )
+
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT objectives.id, objectives.name, objectives.metric, objectives.target, "
+            "objectives.deadline, objectives.tkt_epic_id, "
+            "projects.context AS project_context, projects.name AS project_name "
+            "FROM objectives JOIN projects ON projects.id = objectives.project_id "
+            "WHERE objectives.id = ?",
+            (objective_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="not found")
+        if row["project_context"] != "work":
+            raise HTTPException(status_code=400, detail="tkt linking is work-context only")
+        if row["tkt_epic_id"] is not None:
+            raise HTTPException(status_code=409, detail="objective already has an epic")
+
+        # Build epic description
+        desc_lines = [
+            f"Project: {row['project_name']}",
+            f"Objective: {row['name']}",
+        ]
+        if row["metric"]:
+            desc_lines.append(f"Metric: {row['metric']}")
+        if row["target"]:
+            desc_lines.append(f"Target: {row['target']}")
+        if row["deadline"]:
+            desc_lines.append(f"Deadline: {row['deadline']}")
+
+        try:
+            epic_id = create_epic(row["name"], "\n".join(desc_lines), payload.tkt_project)
+        except TktCreateError as exc:
+            raise HTTPException(status_code=502, detail=f"tkt epic create failed: {exc}") from exc
+
+        # Persist epic id immediately — honest partial state from here on
+        db.execute(
+            "UPDATE objectives SET tkt_epic_id = ? WHERE id = ?",
+            (epic_id, objective_id),
+        )
+        db.commit()
+
+        # Resolve which items to create as children and which to adopt
+        all_items = db.execute(
+            "SELECT id, name, status, eta, blockers, tkt_ticket_id "
+            "FROM items WHERE objective_id = ? ORDER BY id",
+            (objective_id,),
+        ).fetchall()
+
+        unlinked = [i for i in all_items if i["tkt_ticket_id"] is None]
+        linked = [i for i in all_items if i["tkt_ticket_id"] is not None]
+
+        item_ids_to_create = (
+            payload.item_ids
+            if payload.item_ids is not None
+            else [i["id"] for i in unlinked]
+        )
+        adopt_item_ids = (
+            payload.adopt_item_ids
+            if payload.adopt_item_ids is not None
+            else [i["id"] for i in linked]
+        )
+
+        items_by_id = {i["id"]: i for i in all_items}
+
+        errors: list[str] = []
+
+        # Create child tickets for unlinked items
+        for iid in item_ids_to_create:
+            item = items_by_id.get(iid)
+            if item is None:
+                errors.append(f"item {iid}: not found")
+                continue
+            if item["tkt_ticket_id"] is not None:
+                # Already linked — skip silently
+                continue
+            desc = _build_item_desc(row["project_name"], row["name"], item)
+            try:
+                ticket_id = create_ticket_with_parent(
+                    item["name"], desc, payload.tkt_project, epic_id
+                )
+                db.execute("UPDATE items SET tkt_ticket_id = ? WHERE id = ?", (ticket_id, iid))
+            except TktCreateError as exc:
+                errors.append(f"item {iid} create: {exc}")
+
+        # Adopt existing linked tickets into the epic
+        for iid in adopt_item_ids:
+            item = items_by_id.get(iid)
+            if item is None:
+                errors.append(f"adopt item {iid}: not found")
+                continue
+            if item["tkt_ticket_id"] is None:
+                errors.append(f"adopt item {iid}: no ticket id")
+                continue
+            try:
+                adopt_ticket(item["tkt_ticket_id"], epic_id)
+            except TktCreateError as exc:
+                errors.append(f"adopt item {iid} (ticket #{item['tkt_ticket_id']}): {exc}")
+
+        db.commit()
+        obj = _objective_full_dict(db, objective_id)
+
+        if errors:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "message": "epic created but some child operations failed",
+                    "epic_id": epic_id,
+                    "errors": errors,
+                    "objective": obj,
+                },
+            )
+
+        return obj
     finally:
         db.close()

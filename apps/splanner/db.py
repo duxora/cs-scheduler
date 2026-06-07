@@ -90,6 +90,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self._migrate_checkins()
+        self._migrate_objectives()
 
     def _migrate_checkins(self) -> None:
         columns = {
@@ -103,6 +104,15 @@ class Database:
             )
         if "suggested_id" not in columns:
             self.conn.execute("ALTER TABLE checkins ADD COLUMN suggested_id INTEGER")
+        self.conn.commit()
+
+    def _migrate_objectives(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(objectives)").fetchall()
+        }
+        if "tkt_epic_id" not in columns:
+            self.conn.execute("ALTER TABLE objectives ADD COLUMN tkt_epic_id INTEGER")
         self.conn.commit()
 
     def execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:

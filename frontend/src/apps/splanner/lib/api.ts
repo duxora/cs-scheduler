@@ -4,6 +4,8 @@ import type {
   CheckinSource,
   ConnectorStatus,
   Context,
+  CreateEpicPayload,
+  CreateEpicResult,
   CreateTicketResult,
   CreateCheckinPayload,
   Digest,
@@ -15,6 +17,7 @@ import type {
   Objective,
   Project,
   ProjectDetail,
+  TktProjectsResponse,
   UpdateItemPayload,
   UpdateCheckinPayload,
   UpdateDigestPayload,
@@ -154,5 +157,19 @@ export const splannerApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tkt_project: tktProject ?? null }),
+    }),
+
+  listTktProjects: (suggestForObjective?: number) => {
+    const qs = new URLSearchParams()
+    if (suggestForObjective !== undefined) qs.set('suggest_for_objective', String(suggestForObjective))
+    const query = qs.toString() ? `?${qs.toString()}` : ''
+    return fetchJson<TktProjectsResponse>(`/tkt/projects${query}`)
+  },
+
+  createEpic: (objectiveId: number, payload: CreateEpicPayload) =>
+    fetchJson<CreateEpicResult>(`/objectives/${objectiveId}/create-epic`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     }),
 }

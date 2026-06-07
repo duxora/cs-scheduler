@@ -55,6 +55,7 @@ export interface Objective {
   unit: string | null
   deadline: string | null
   status: ObjectiveStatus
+  tkt_epic_id: number | null
   created_at: string
   items: Item[]
 }
@@ -199,3 +200,21 @@ export interface UpdateDigestPayload {
 }
 
 export type CreateTicketResult = Item
+
+export interface TktProject {
+  id: string
+  name: string
+}
+
+export interface TktProjectsResponse {
+  projects: TktProject[]
+  suggested: string | null
+}
+
+export interface CreateEpicPayload {
+  tkt_project: string
+  item_ids: number[] | null
+  adopt_item_ids: number[] | null
+}
+
+export type CreateEpicResult = Objective
