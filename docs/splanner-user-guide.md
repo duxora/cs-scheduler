@@ -11,8 +11,8 @@ Open it at **http://127.0.0.1:7070/splanner** (runs under launchd, always on).
 ```
 Context (work | family | personal)
 └── Project        — a named initiative with a priority
-    └── Objective  — a measurable outcome (metric, target, current, deadline)
-        └── Item   — an execution step (the only level that links to a tkt ticket)
+    └── Objective  — a measurable outcome (metric, target, current, deadline) — links to a tkt epic
+        └── Item   — an execution step — links to a tkt ticket
             └── Check-in — the event stream feeding everything
 ```
 
@@ -28,7 +28,8 @@ Two rules make the model work:
 1. **Create 3–7 projects** on the dashboard, one per real initiative, spread across contexts. Set priority honestly — the dashboard ranks by it (blocked projects auto-boost to the top).
 2. **Give each project 1–3 objectives, and make them measurable.** The KPI delta strip in the weekly digest only shows objectives with a numeric `current` value. "Ship migration" gives the AI nothing; `metric: slices shipped, target: 9, current: 4` gives it a week-over-week arrow.
 3. **Add items only for active objectives.** Items are execution altitude — what you'd actually do this week. Stale item lists rot; keep them short.
-4. **For work projects, link items to tkt tickets** ("Create tkt" button on the item row). From then on, completing the ticket flips the item to done automatically and logs a `win` check-in — zero bookkeeping.
+4. **For work projects, push the whole objective into dev-flow with one click** — **Create epic** on the objective header. It creates a tkt epic, child tickets for every unlinked item, and adopts any already-linked tickets into the epic. From then on, every item you add gets its ticket created *inside* the epic automatically, and completing a ticket flips the item to done and logs a `win` check-in — zero bookkeeping.
+5. Prefer ticket-by-ticket instead? "Create tkt" on an item row still works standalone; tickets created before the epic exists get adopted when you create it.
 
 ---
 
@@ -82,6 +83,19 @@ The loop is: **capture → digest → focus → capture.** The focus items you a
 - **life-graph** — reads `~/.life-graph/life-graph.db`; only signal entity types (decision, goal, commitment, lesson, idea).
 
 Dedup is by `(source, source_ref)` and each connector keeps a watermark, so syncing twice never double-ingests.
+
+---
+
+## Epics — the objective ↔ dev-flow bridge (work context)
+
+**Create epic** on an objective header opens a small panel: the target tkt project is pre-resolved (from where the objective's existing tickets live, else by name match), and the button reads exactly what will happen — *"Create epic + N tickets"*. "Customize items" lets you cherry-pick, but the default is the right call: all unlinked items become child tickets, all linked ones are adopted.
+
+What it buys you:
+
+- **One container in the backlog.** The objective is an epic; its items are the epic's children. Dev-flow (claim → branch → PR → done) operates on the children; SPlanner watches.
+- **Cascade on new items.** Once the epic exists, "Create tkt" on any new item lands inside the epic, in the epic's project — no picking, no orphans.
+- **Honest status.** Items linked to tickets show a read-only status badge ("synced from tkt #N") — tkt is the source of truth, and the daemon/Sync-now keeps it current. Unlinked items stay hand-editable.
+- **No magic on the objective itself.** The epic's progress never auto-flips objective health — that stays your call (*AI proposes, you decide*).
 
 ---
 
