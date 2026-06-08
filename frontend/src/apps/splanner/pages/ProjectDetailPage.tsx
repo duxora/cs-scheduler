@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import CheckinComposer, { type CheckinComposerScope } from '../components/CheckinComposer'
+import DiscussionPanel from '../components/DiscussionPanel'
 import CheckinStream from '../components/CheckinStream'
 import { splannerApi } from '../lib/api'
 import type {
@@ -969,6 +970,12 @@ export default function ProjectDetailPage() {
                 })}
               </div>
             </div>
+            <section className="rounded-2xl border border-gray-800 bg-gray-900/70 p-5">
+              <DiscussionPanel
+                projectId={detail.project.id}
+                onApplied={() => loadProjectDetail(detail.project.id)}
+              />
+            </section>
             <CheckinStream checkins={detail.checkins} refetch={handleCheckinCreated} />
           </aside>
         </div>

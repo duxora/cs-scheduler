@@ -218,3 +218,62 @@ export interface CreateEpicPayload {
 }
 
 export type CreateEpicResult = Objective
+
+export type DiscussionRole = 'user' | 'assistant' | 'system'
+
+export interface DiscussionMessage {
+  id: number
+  role: DiscussionRole
+  content: string
+  created_at: string
+}
+
+export interface ObjectiveOp {
+  type: 'objective'
+  name: string
+  metric: string | null
+  target: string | null
+  unit: string | null
+  make_epic: boolean
+}
+
+export interface ItemOp {
+  type: 'item'
+  objective_id: number | null
+  new_objective_name: string | null
+  name: string
+  make_ticket: boolean
+}
+
+export interface CheckinOp {
+  type: 'checkin'
+  level: 'project' | 'objective' | 'item'
+  target_id: number | null
+  kind: CheckinKind
+  body: string
+}
+
+export type ProposalOp = ObjectiveOp | ItemOp | CheckinOp
+
+export interface DroppedOp {
+  raw: unknown
+  reason: string
+}
+
+export interface ConvertResult {
+  ops: ProposalOp[]
+  dropped: DroppedOp[]
+}
+
+export interface ApplyResult {
+  created: {
+    objectives: number[]
+    items: number[]
+    checkins: number[]
+  }
+  tkt_errors: {
+    type: string
+    id: number
+    detail: unknown
+  }[]
+}

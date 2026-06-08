@@ -1,17 +1,21 @@
 import type {
+  ApplyResult,
   Checkin,
   CheckinKind,
   CheckinSource,
   ConnectorStatus,
+  ConvertResult,
   Context,
   CreateEpicPayload,
   CreateEpicResult,
   CreateTicketResult,
   CreateCheckinPayload,
   Digest,
+  DiscussionMessage,
   CreateItemPayload,
   CreateObjectivePayload,
   PollResult,
+  ProposalOp,
   CreateProjectPayload,
   Item,
   Objective,
@@ -28,9 +32,13 @@ import type {
 const BASE = '/splanner/api'
 
 async function readError(res: Response): Promise<string> {
-  const body = await res.json().catch(() => null)
+  const body: unknown = await res.json().catch(() => null)
   if (body && typeof body === 'object') {
-    if ('detail' in body && typeof body.detail === 'string') return body.detail
+    if ('detail' in body) {
+      const detail = body.detail
+      if (typeof detail === 'string') return detail
+      return JSON.stringify(detail)
+    }
     if ('error' in body && typeof body.error === 'string') return body.error
   }
   return `${res.status} ${res.statusText}`
@@ -171,5 +179,27 @@ export const splannerApi = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    }),
+
+  getDiscussion: (projectId: number) =>
+    fetchJson<{ messages: DiscussionMessage[] }>(`/projects/${projectId}/discussion`),
+
+  postDiscussionMessage: (projectId: number, text: string) =>
+    fetchJson<DiscussionMessage>(`/projects/${projectId}/discussion/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }),
+
+  convertDiscussion: (projectId: number) =>
+    fetchJson<ConvertResult>(`/projects/${projectId}/discussion/convert`, {
+      method: 'POST',
+    }),
+
+  applyDiscussion: (projectId: number, ops: ProposalOp[]) =>
+    fetchJson<ApplyResult>(`/projects/${projectId}/discussion/apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ops }),
     }),
 }
