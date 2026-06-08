@@ -204,7 +204,9 @@ def _validate_objective_op(op: object) -> tuple[dict | None, str | None]:
     }, None
 
 
-def _validate_item_op(op: object) -> tuple[dict | None, str | None]:
+def _validate_item_op(
+    op: object, existing_objective_ids: set[int] | None = None
+) -> tuple[dict | None, str | None]:
     if not isinstance(op, dict):
         return None, "op must be an object"
     name = op.get("name")
@@ -220,6 +222,12 @@ def _validate_item_op(op: object) -> tuple[dict | None, str | None]:
         return None, "item objective_id must be an int or null"
     if new_objective_name is not None and not isinstance(new_objective_name, str):
         return None, "item new_objective_name must be a string or null"
+    # Safety net: if we know which objective ids exist, reject references to hallucinated ids.
+    if has_objective_id and existing_objective_ids is not None and objective_id not in existing_objective_ids:
+        return None, (
+            f"objective_id {objective_id} does not exist; "
+            "use new_objective_name for objectives proposed in this batch"
+        )
     return {
         "type": "item",
         "objective_id": objective_id if has_objective_id else None,
@@ -253,29 +261,43 @@ def _validate_checkin_op(op: object) -> tuple[dict | None, str | None]:
     }, None
 
 
-def _validate_proposal_op(op: object) -> tuple[dict | None, str | None]:
+def _validate_proposal_op(
+    op: object, existing_objective_ids: set[int] | None = None
+) -> tuple[dict | None, str | None]:
     if not isinstance(op, dict):
         return None, "op must be an object"
     op_type = op.get("type")
     if op_type == "objective":
         return _validate_objective_op(op)
     if op_type == "item":
-        return _validate_item_op(op)
+        return _validate_item_op(op, existing_objective_ids)
     if op_type == "checkin":
         return _validate_checkin_op(op)
     return None, "invalid op type"
 
 
 async def build_proposal(db, project_id: int) -> dict:
+    # Fetch existing objective ids so we can reject hallucinated references at validation time.
+    existing_objective_ids: set[int] = {
+        row["id"]
+        for row in db.execute(
+            "SELECT id FROM objectives WHERE project_id = ?", (project_id,)
+        ).fetchall()
+    }
+
     grounding = build_grounding(db, project_id)
     history = _render_history(list_messages(db, project_id))
     prompt = (
         "Extract actionable SPlanner operations from this discussion. Return STRICT JSON only with this shape:\n"
         '{"ops":[{"type":"objective","name":"...","metric":"...","target":"...","unit":"..."},'
-        '{"type":"item","objective_id":1,"new_objective_name":null,"name":"..."},'
+        '{"type":"item","objective_id":null,"new_objective_name":"<exact name of an objective op above>","name":"..."},'
         '{"type":"checkin","level":"project|objective|item","target_id":1,"kind":"win|risk|decision|blocked|note","body":"..."}]}\n'
-        "For item ops, set exactly one of objective_id or new_objective_name.\n"
-        "Do not include make_epic or make_ticket.\n\n"
+        "ITEM REFERENCE RULES (strictly follow these — wrong ids cause apply to fail):\n"
+        "- For an item that belongs to an objective you are ALSO proposing in THIS response, set "
+        "`new_objective_name` to that objective's exact `name` and set `objective_id` to null.\n"
+        "- For an item under an EXISTING objective, set `objective_id` to one of the existing objective ids "
+        "listed in Grounding (and `new_objective_name` null). Never invent an objective_id.\n"
+        "Set exactly one of objective_id / new_objective_name per item. Do not include make_epic or make_ticket.\n\n"
         f"Grounding:\n{grounding}\n\n"
         f"Thread:\n{history}"
     )
@@ -294,7 +316,7 @@ async def build_proposal(db, project_id: int) -> dict:
     ops: list[dict] = []
     dropped: list[dict] = []
     for raw_op in raw_ops:
-        op, reason = _validate_proposal_op(raw_op)
+        op, reason = _validate_proposal_op(raw_op, existing_objective_ids)
         if op is None:
             dropped.append({"raw": raw_op, "reason": reason})
             continue

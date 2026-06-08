@@ -91,11 +91,12 @@ def test_convert_injects_make_defaults_and_returns_empty_dropped(client: TestCli
 
     async def fake_ask(prompt: str, timeout: int = 180) -> str | None:
         assert "STRICT JSON" in prompt
+        # Item uses new_objective_name (correct pattern for a co-proposed objective).
         return """
         {
           "ops": [
             {"type": "objective", "name": "Ship", "metric": "coverage", "target": "90", "unit": "%"},
-            {"type": "item", "objective_id": 1, "new_objective_name": null, "name": "Write tests"},
+            {"type": "item", "objective_id": null, "new_objective_name": "Ship", "name": "Write tests"},
             {"type": "checkin", "level": "project", "target_id": 1, "kind": "win", "body": "Started work"}
           ]
         }
@@ -118,8 +119,8 @@ def test_convert_injects_make_defaults_and_returns_empty_dropped(client: TestCli
             },
             {
                 "type": "item",
-                "objective_id": 1,
-                "new_objective_name": None,
+                "objective_id": None,
+                "new_objective_name": "Ship",
                 "name": "Write tests",
                 "make_ticket": False,
             },
@@ -290,3 +291,149 @@ def test_apply_rolls_back_entire_batch_when_later_op_is_invalid(client: TestClie
         }
 
     assert counts == {"objectives": 0, "items": 0, "checkins": 0}
+
+
+# Wave 3 tests
+
+
+def test_convert_accepts_item_with_new_objective_name(client: TestClient, monkeypatch):
+    """Happy path: item referencing a new objective via new_objective_name lands in ops (not dropped)."""
+    project_id = _create_project(client)
+
+    async def fake_ask(prompt: str, timeout: int = 180) -> str | None:
+        return """
+        {
+          "ops": [
+            {"type": "objective", "name": "Grow revenue", "metric": "MRR", "target": "10k", "unit": "$"},
+            {"type": "item", "objective_id": null, "new_objective_name": "Grow revenue", "name": "Launch pricing page"}
+          ]
+        }
+        """
+
+    monkeypatch.setattr("apps.splanner.discussion._ask_claude", fake_ask)
+
+    response = client.post(f"/splanner/api/projects/{project_id}/discussion/convert")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["dropped"] == []
+    assert len(body["ops"]) == 2
+    item_op = body["ops"][1]
+    assert item_op["type"] == "item"
+    assert item_op["new_objective_name"] == "Grow revenue"
+    assert item_op["objective_id"] is None
+
+
+def test_convert_drops_item_with_nonexistent_objective_id(client: TestClient, monkeypatch):
+    """Item with objective_id that doesn't exist in the project is dropped with the specific reason."""
+    project_id = _create_project(client)
+    # No objectives seeded → any objective_id is nonexistent.
+
+    async def fake_ask(prompt: str, timeout: int = 180) -> str | None:
+        return """
+        {
+          "ops": [
+            {"type": "objective", "name": "New objective", "metric": null, "target": null, "unit": null},
+            {"type": "item", "objective_id": 42, "new_objective_name": null, "name": "Item with bad id"}
+          ]
+        }
+        """
+
+    monkeypatch.setattr("apps.splanner.discussion._ask_claude", fake_ask)
+
+    response = client.post(f"/splanner/api/projects/{project_id}/discussion/convert")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Objective op is valid, item op is dropped.
+    assert len(body["ops"]) == 1
+    assert body["ops"][0]["type"] == "objective"
+    assert len(body["dropped"]) == 1
+    assert "does not exist" in body["dropped"][0]["reason"]
+    assert "42" in body["dropped"][0]["reason"]
+
+
+def test_convert_accepts_item_with_existing_objective_id(client: TestClient, monkeypatch):
+    """Item referencing an existing objective by id is accepted in ops."""
+    project_id = _create_project(client)
+
+    # Seed an existing objective via the apply endpoint.
+    apply_resp = client.post(
+        f"/splanner/api/projects/{project_id}/discussion/apply",
+        json={
+            "ops": [
+                {
+                    "type": "objective",
+                    "name": "Existing goal",
+                    "metric": None,
+                    "target": None,
+                    "unit": None,
+                    "make_epic": False,
+                }
+            ]
+        },
+    )
+    assert apply_resp.status_code == 200, apply_resp.text
+    existing_id = apply_resp.json()["created"]["objectives"][0]
+
+    async def fake_ask(prompt: str, timeout: int = 180) -> str | None:
+        return f"""
+        {{
+          "ops": [
+            {{"type": "item", "objective_id": {existing_id}, "new_objective_name": null, "name": "Add tests"}}
+          ]
+        }}
+        """
+
+    monkeypatch.setattr("apps.splanner.discussion._ask_claude", fake_ask)
+
+    response = client.post(f"/splanner/api/projects/{project_id}/discussion/convert")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["dropped"] == []
+    assert len(body["ops"]) == 1
+    assert body["ops"][0]["objective_id"] == existing_id
+
+
+def test_apply_regression_new_objective_name_still_works(client: TestClient, monkeypatch):
+    """Regression: apply with new objective + item via new_objective_name remains green after Wave 3 changes."""
+    project_id = _create_project(client)
+
+    async def fail_epic(*args, **kwargs):
+        raise AssertionError("create_epic_for_objective should not be called")
+
+    async def fail_ticket(*args, **kwargs):
+        raise AssertionError("create_ticket_for_item should not be called")
+
+    monkeypatch.setattr("apps.splanner.routes.create_epic_for_objective", fail_epic)
+    monkeypatch.setattr("apps.splanner.routes.create_ticket_for_item", fail_ticket)
+
+    response = client.post(
+        f"/splanner/api/projects/{project_id}/discussion/apply",
+        json={
+            "ops": [
+                {
+                    "type": "objective",
+                    "name": "Reduce churn",
+                    "metric": "churn",
+                    "target": "2",
+                    "unit": "%",
+                    "make_epic": False,
+                },
+                {
+                    "type": "item",
+                    "objective_id": None,
+                    "new_objective_name": "Reduce churn",
+                    "name": "Add offboarding survey",
+                    "make_ticket": False,
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert len(body["created"]["objectives"]) == 1
+    assert len(body["created"]["items"]) == 1
+    assert body["tkt_errors"] == []
