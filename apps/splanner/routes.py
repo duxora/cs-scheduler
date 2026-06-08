@@ -1187,3 +1187,117 @@ async def create_epic_for_objective(objective_id: int, payload: CreateEpicPayloa
         return obj
     finally:
         db.close()
+
+
+from typing import Annotated
+
+from .discussion import ApplyOpsError, apply_ops as apply_discussion_ops
+from .discussion import build_proposal as build_discussion_proposal
+from .discussion import chat_turn as run_discussion_chat_turn
+from .discussion import list_messages as list_discussion_messages
+
+
+class DiscussionMessageCreate(BaseModel):
+    text: str
+
+
+class DiscussionObjectiveOp(BaseModel):
+    type: Literal["objective"]
+    name: str = Field(min_length=1)
+    metric: str | None = None
+    target: str | None = None
+    unit: str | None = None
+    make_epic: bool = False
+
+
+class DiscussionItemOp(BaseModel):
+    type: Literal["item"]
+    objective_id: int | None = None
+    new_objective_name: str | None = None
+    name: str = Field(min_length=1)
+    make_ticket: bool = False
+
+
+class DiscussionCheckinOp(BaseModel):
+    type: Literal["checkin"]
+    level: Literal["project", "objective", "item"]
+    target_id: int | None = None
+    kind: CheckinKind
+    body: str = Field(min_length=1)
+
+
+DiscussionOp = Annotated[
+    DiscussionObjectiveOp | DiscussionItemOp | DiscussionCheckinOp,
+    Field(discriminator="type"),
+]
+
+
+class DiscussionApplyPayload(BaseModel):
+    ops: list[DiscussionOp]
+
+
+def _require_project_exists(project_id: int) -> None:
+    db = get_db()
+    try:
+        project = db.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if project is None:
+            raise HTTPException(status_code=404, detail="not found")
+    finally:
+        db.close()
+
+
+@router.get("/api/projects/{project_id}/discussion")
+async def get_discussion(project_id: int):
+    _require_project_exists(project_id)
+    db = get_db()
+    try:
+        return {"messages": list_discussion_messages(db, project_id)}
+    finally:
+        db.close()
+
+
+@router.post("/api/projects/{project_id}/discussion/messages")
+async def create_discussion_message(project_id: int, payload: DiscussionMessageCreate):
+    _require_project_exists(project_id)
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text must not be empty")
+
+    db = get_db()
+    try:
+        try:
+            return await run_discussion_chat_turn(db, project_id, text)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail="claude discussion failed") from exc
+    finally:
+        db.close()
+
+
+@router.post("/api/projects/{project_id}/discussion/convert")
+async def convert_discussion(project_id: int):
+    _require_project_exists(project_id)
+    db = get_db()
+    try:
+        try:
+            return await build_discussion_proposal(db, project_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail="claude proposal failed") from exc
+    finally:
+        db.close()
+
+
+@router.post("/api/projects/{project_id}/discussion/apply")
+async def apply_discussion(project_id: int, payload: DiscussionApplyPayload):
+    _require_project_exists(project_id)
+    db = get_db()
+    try:
+        try:
+            ops = [op.model_dump() for op in payload.ops]
+            return await apply_discussion_ops(db, ops, project_id)
+        except ApplyOpsError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"failed_op": exc.failed_op, "reason": exc.reason},
+            ) from exc
+    finally:
+        db.close()

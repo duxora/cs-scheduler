@@ -69,6 +69,14 @@ CREATE TABLE IF NOT EXISTS digests (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS discussion_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user','assistant','system')),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_projects_context_priority
     ON projects(context, archived, priority DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_objectives_project_id
@@ -77,6 +85,8 @@ CREATE INDEX IF NOT EXISTS idx_items_objective_id
     ON items(objective_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_checkins_project_created_at
     ON checkins(project_id, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_discussion_messages_project
+    ON discussion_messages(project_id, created_at, id);
 """
 
 
