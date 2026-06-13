@@ -455,7 +455,6 @@ def aggregate(
 
     top: list[dict] = []
     unmatched: list[dict] = []
-    enhance_candidates: list[dict] = []
     used_skill_names: set[str] = set()
     total_invocations = 0
 
@@ -490,15 +489,6 @@ def aggregate(
         )
         if owned_entry:
             used_skill_names.add(skill_name)
-            enhance_candidates.append(
-                {
-                    "name": skill_name,
-                    "kind": owned_entry["kind"],
-                    "total": total,
-                    "count_30d": count_30d,
-                    "last_used": last_used,
-                }
-            )
 
     retire_candidates = [
         {
@@ -515,7 +505,6 @@ def aggregate(
 
     top.sort(key=lambda item: (-item["total"], item["name"]))
     unmatched.sort(key=lambda item: (-item["total"], item["name"]))
-    enhance_candidates.sort(key=lambda item: (-item["count_30d"], -item["total"], item["name"]))
     retire_candidates.sort(key=lambda item: (item["situational"], item["name"]))
 
     return {
@@ -529,7 +518,6 @@ def aggregate(
         },
         "top": top[:30],
         "retire_candidates": retire_candidates,
-        "enhance_candidates": enhance_candidates[:10],
         "unmatched": unmatched[:30],
     }
 

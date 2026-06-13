@@ -237,7 +237,6 @@ async def skill_usage():
         },
         "top": [],
         "retire_candidates": [],
-        "enhance_candidates": [],
         "unmatched": [],
     }
     try:

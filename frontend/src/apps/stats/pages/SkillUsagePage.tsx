@@ -41,7 +41,6 @@ interface SkillUsageData {
   summary: SkillSummaryData
   top: UsageEntry[]
   retire_candidates: RetireCandidate[]
-  enhance_candidates: UsageEntry[]
   unmatched: UnmatchedEntry[]
 }
 
@@ -90,7 +89,6 @@ interface FilteredSkillView {
   summary: SkillSummaryData
   top: UsageEntry[]
   retire_candidates: RetireCandidate[]
-  enhance_candidates: UsageEntry[]
   unmatched: UnmatchedEntry[]
 }
 
@@ -132,18 +130,7 @@ function sumTotals(entries: UsageEntry[]): number {
 function buildFilteredSkillView(data: SkillUsageData, kind: OwnedKind): FilteredSkillView {
   const top = data.top.filter((entry) => entry.kind === kind)
   const retireCandidates = data.retire_candidates.filter((entry) => entry.kind === kind)
-  const enhanceCandidates = data.enhance_candidates
-    .filter((entry) => entry.kind === kind)
-    .sort((left, right) => (
-      right.count_30d - left.count_30d
-      || right.total - left.total
-      || left.name.localeCompare(right.name)
-    ))
-
-  const usedOwnedNames = new Set<string>([
-    ...top.map((entry) => entry.name),
-    ...enhanceCandidates.map((entry) => entry.name),
-  ])
+  const usedOwnedNames = new Set<string>(top.map((entry) => entry.name))
 
   const skillsOnDisk = usedOwnedNames.size + retireCandidates.length
   const skillsUsed = usedOwnedNames.size
@@ -159,7 +146,6 @@ function buildFilteredSkillView(data: SkillUsageData, kind: OwnedKind): Filtered
     },
     top,
     retire_candidates: retireCandidates,
-    enhance_candidates: enhanceCandidates,
     unmatched: data.unmatched,
   }
 }
@@ -494,35 +480,6 @@ export default function SkillUsagePage() {
                 </div>
               </section>
 
-              <section className="rounded-lg border border-gray-700 bg-gray-800/50">
-                <div className="border-b border-gray-700 px-4 py-3">
-                  <h2 className="text-lg font-semibold">Enhance Candidates</h2>
-                  <p className="mt-1 text-xs text-gray-500">High-use → prioritize upgrades</p>
-                </div>
-                <div className="p-4">
-                  {!activeSkillView || activeSkillView.enhance_candidates.length === 0 ? (
-                    <p className="text-sm text-gray-500">No active owned entries to prioritize yet.</p>
-                  ) : (
-                    <ul className="space-y-3">
-                      {activeSkillView.enhance_candidates.map((entry) => (
-                        <li key={entry.name} className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <span className="font-mono text-sm text-blue-400">{entry.name}</span>
-                            <span className="inline-flex rounded border border-gray-600 px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-gray-300">
-                              {formatKind(entry.kind)}
-                            </span>
-                          </div>
-                          <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-gray-400">
-                            <div>30d: {entry.count_30d}</div>
-                            <div>Total: {entry.total}</div>
-                            <div>Last: {formatLastUsed(entry.last_used)}</div>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </section>
             </div>
           </div>
 

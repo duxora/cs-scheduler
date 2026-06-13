@@ -109,15 +109,6 @@ def test_owned_command_counts_as_used_with_command_kind(tmp_path):
 
     assert payload["summary"]["skills_used"] == 1
     assert payload["top"][0]["kind"] == "command"
-    assert payload["enhance_candidates"] == [
-        {
-            "name": "review-local",
-            "kind": "command",
-            "total": 1,
-            "count_30d": 1,
-            "last_used": "2026-06-13",
-        }
-    ]
 
 
 def test_noise_invocation_stays_unmatched(tmp_path):
@@ -177,7 +168,6 @@ def test_retire_candidates_use_owned_set_only(tmp_path):
             "description": "",
         }
     ]
-    assert payload["enhance_candidates"] == []
 
 
 def test_incremental_scan_skips_unchanged_and_replaces_changed_counts(tmp_path):
@@ -245,15 +235,6 @@ def test_windows_respect_injected_today(tmp_path):
             "kind": "skill",
             "total": 4,
             "count_7d": 2,
-            "count_30d": 3,
-            "last_used": "2026-06-13",
-        }
-    ]
-    assert payload["enhance_candidates"] == [
-        {
-            "name": "brainstorming",
-            "kind": "skill",
-            "total": 4,
             "count_30d": 3,
             "last_used": "2026-06-13",
         }
