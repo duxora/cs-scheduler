@@ -19,7 +19,7 @@ export default function StatsApp() {
 
   return (
     <div className="flex flex-col h-full bg-gray-950">
-      <div className="border-b border-gray-700 px-4 pt-4">
+      <div className="shrink-0 border-b border-gray-700 px-4 pt-4">
         <div className="inline-flex rounded-lg border border-gray-700 bg-gray-900 p-1">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.key
@@ -40,9 +40,11 @@ export default function StatsApp() {
           })}
         </div>
       </div>
-      <Suspense fallback={<PageLoader />}>
-        {activeTab === 'dashboard' ? <DashboardPage /> : <SkillUsagePage />}
-      </Suspense>
+      <div className="flex-1 min-h-0">
+        <Suspense fallback={<PageLoader />}>
+          {activeTab === 'dashboard' ? <DashboardPage /> : <SkillUsagePage />}
+        </Suspense>
+      </div>
     </div>
   )
 }
