@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, Query
 from typing import Optional
 
+from apps.skill_stats import scanner
+
 router = APIRouter()
 
 LOCAL_KB_DB = "/Users/ducduong/workspace/tools/local-kb/kb.db"
@@ -220,3 +222,42 @@ async def stats_runs(limit: int = Query(20, ge=1, le=100)):
         return []
     finally:
         conn.close()
+
+
+@router.get("/skill-usage")
+async def skill_usage():
+    """Return cached skill-usage analytics with a cheap incremental refresh."""
+    empty_payload = {
+        "summary": {
+            "skills_on_disk": 0,
+            "skills_used": 0,
+            "skills_unused": 0,
+            "total_invocations": 0,
+            "history_since": None,
+        },
+        "top": [],
+        "retire_candidates": [],
+        "enhance_candidates": [],
+        "unmatched": [],
+    }
+    try:
+        scanner.scan(full=False)
+        return scanner.aggregate()
+    except Exception:
+        return empty_payload
+
+
+@router.post("/skill-usage/refresh")
+async def skill_usage_refresh():
+    """Force a full skill-usage refresh and return the summary block."""
+    try:
+        scanner.scan(full=True)
+        return scanner.aggregate()["summary"]
+    except Exception:
+        return {
+            "skills_on_disk": 0,
+            "skills_used": 0,
+            "skills_unused": 0,
+            "total_invocations": 0,
+            "history_since": None,
+        }
