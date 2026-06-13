@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+import subprocess
 from datetime import date
 from glob import glob
 from pathlib import Path
@@ -15,6 +17,7 @@ OWNED_SKILL_GLOB = os.path.expanduser("~/.claude/skills/*/SKILL.md")
 OWNED_COMMAND_GLOB = os.path.expanduser("~/.claude/commands/*.md")
 ALL_SKILL_GLOB = os.path.expanduser("~/.claude/**/SKILL.md")
 ALL_COMMAND_GLOB = os.path.expanduser("~/.claude/**/commands/*.md")
+MCP_NAME_PATTERN = re.compile(r"(?m)^([A-Za-z0-9][\w:.-]*):\s")
 SITUATIONAL_MARKERS = (
     "manual-invoke only",
     "manual-only",
@@ -46,6 +49,26 @@ def _ensure_db(db_path: str | Path) -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS scan_state(
             file TEXT PRIMARY KEY,
             mtime REAL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mcp_events(
+            file TEXT,
+            server TEXT,
+            tool TEXT,
+            day TEXT,
+            count INTEGER,
+            PRIMARY KEY(file, server, tool, day)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mcp_inventory(
+            name TEXT PRIMARY KEY,
+            captured_at TEXT
         )
         """
     )
@@ -197,38 +220,87 @@ def discover_all() -> set[str]:
     return inventory
 
 
-def _extract_invocations(line: str) -> list[tuple[str, str]]:
+def _extract_events(line: str) -> tuple[list[tuple[str, str]], list[tuple[str, str, str]]]:
     try:
         obj = json.loads(line)
     except json.JSONDecodeError:
-        return []
+        return [], []
 
     timestamp = obj.get("timestamp")
     if not isinstance(timestamp, str) or len(timestamp) < 10:
-        return []
+        return [], []
 
     message = obj.get("message")
     if not isinstance(message, dict):
-        return []
+        return [], []
 
     content = message.get("content")
     if not isinstance(content, list):
-        return []
+        return [], []
 
-    invocations: list[tuple[str, str]] = []
+    skill_invocations: list[tuple[str, str]] = []
+    mcp_invocations: list[tuple[str, str, str]] = []
     for block in content:
         if not isinstance(block, dict):
             continue
-        if block.get("type") != "tool_use" or block.get("name") != "Skill":
+        if block.get("type") != "tool_use":
             continue
-        raw_input = block.get("input")
-        if not isinstance(raw_input, dict):
+
+        block_name = block.get("name")
+        if not isinstance(block_name, str):
             continue
-        skill_name = raw_input.get("skill")
-        if not isinstance(skill_name, str) or not skill_name:
+
+        if block_name == "Skill":
+            raw_input = block.get("input")
+            if not isinstance(raw_input, dict):
+                continue
+            skill_name = raw_input.get("skill")
+            if not isinstance(skill_name, str) or not skill_name:
+                continue
+            skill_invocations.append((skill_name.split(":")[-1], timestamp[:10]))
             continue
-        invocations.append((skill_name.split(":")[-1], timestamp[:10]))
-    return invocations
+
+        if not block_name.startswith("mcp__"):
+            continue
+
+        parts = block_name.split("__")
+        if len(parts) < 3 or not parts[1]:
+            continue
+        server = parts[1]
+        tool = "__".join(parts[2:]) or block_name
+        mcp_invocations.append((server, tool, timestamp[:10]))
+
+    return skill_invocations, mcp_invocations
+
+
+def _load_mcp_inventory(conn: sqlite3.Connection) -> tuple[list[str], str | None]:
+    rows = conn.execute(
+        "SELECT name, captured_at FROM mcp_inventory ORDER BY name"
+    ).fetchall()
+    inventory = [str(row[0]) for row in rows]
+    captured_at = rows[0][1] if rows else None
+    return inventory, captured_at
+
+
+def _normalize_mcp_inventory_name(name: str) -> str:
+    return name.replace(":", "_")
+
+
+def _mcp_base_token(value: str) -> str:
+    return value.split("-")[0].split("_")[0]
+
+
+def _run_mcp_list() -> str:
+    completed = subprocess.run(
+        ["claude", "mcp", "list"],
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
 
 
 def scan(
@@ -265,22 +337,35 @@ def scan(
                 files_skipped += 1
                 continue
 
-            counts: dict[tuple[str, str], int] = {}
+            skill_counts: dict[tuple[str, str], int] = {}
+            mcp_counts: dict[tuple[str, str, str], int] = {}
             try:
                 with path.open("r", encoding="utf-8") as handle:
                     for line in handle:
-                        invocations = _extract_invocations(line)
-                        invocations_seen += len(invocations)
-                        for skill_name, day in invocations:
-                            counts[(skill_name, day)] = counts.get((skill_name, day), 0) + 1
+                        skill_invocations, mcp_invocations = _extract_events(line)
+                        invocations_seen += len(skill_invocations) + len(mcp_invocations)
+                        for skill_name, day in skill_invocations:
+                            skill_counts[(skill_name, day)] = skill_counts.get((skill_name, day), 0) + 1
+                        for server, tool, day in mcp_invocations:
+                            key = (server, tool, day)
+                            mcp_counts[key] = mcp_counts.get(key, 0) + 1
             except OSError:
                 continue
 
             conn.execute("DELETE FROM skill_events WHERE file = ?", (file_key,))
-            if counts:
+            conn.execute("DELETE FROM mcp_events WHERE file = ?", (file_key,))
+            if skill_counts:
                 conn.executemany(
                     "INSERT INTO skill_events(file, skill, day, count) VALUES (?, ?, ?, ?)",
-                    [(file_key, skill, day, count) for (skill, day), count in counts.items()],
+                    [(file_key, skill, day, count) for (skill, day), count in skill_counts.items()],
+                )
+            if mcp_counts:
+                conn.executemany(
+                    "INSERT INTO mcp_events(file, server, tool, day, count) VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (file_key, server, tool, day, count)
+                        for (server, tool, day), count in mcp_counts.items()
+                    ],
                 )
             conn.execute(
                 "INSERT INTO scan_state(file, mtime) VALUES (?, ?) "
@@ -295,6 +380,39 @@ def scan(
             "files_skipped": files_skipped,
             "invocations_seen": invocations_seen,
         }
+    finally:
+        conn.close()
+
+
+def capture_mcp_inventory(
+    db_path: str | Path | None = None,
+    runner: Any | None = None,
+) -> list[str]:
+    target_db = db_path or DB_PATH
+    conn = _ensure_db(target_db)
+    inventory_runner = runner or _run_mcp_list
+    try:
+        current_inventory, _ = _load_mcp_inventory(conn)
+        try:
+            output = inventory_runner()
+        except Exception:
+            return current_inventory
+
+        if not isinstance(output, str):
+            return current_inventory
+
+        names = sorted(set(MCP_NAME_PATTERN.findall(output)))
+        if not names:
+            return current_inventory
+
+        captured_at = date.today().isoformat()
+        conn.execute("DELETE FROM mcp_inventory")
+        conn.executemany(
+            "INSERT INTO mcp_inventory(name, captured_at) VALUES (?, ?)",
+            [(name, captured_at) for name in names],
+        )
+        conn.commit()
+        return names
     finally:
         conn.close()
 
@@ -416,6 +534,146 @@ def aggregate(
     }
 
 
+def aggregate_mcp(
+    db_path: str | Path | None = None,
+    inventory: list[str] | None = None,
+    today: date | None = None,
+) -> dict:
+    target_db = db_path or DB_PATH
+    conn = _ensure_db(target_db)
+    try:
+        rows = conn.execute(
+            "SELECT server, tool, day, SUM(count) FROM mcp_events GROUP BY server, tool, day"
+        ).fetchall()
+        stored_inventory, captured_at = _load_mcp_inventory(conn)
+    finally:
+        conn.close()
+
+    inventory_names = sorted(set(inventory if inventory is not None else stored_inventory))
+    inventory_captured_at = captured_at if inventory is None else None
+
+    by_server: dict[str, dict[str, dict[str, int]]] = {}
+    history_since: str | None = None
+    max_day: str | None = None
+
+    for server, tool, day, count in rows:
+        if history_since is None or day < history_since:
+            history_since = day
+        if max_day is None or day > max_day:
+            max_day = day
+        server_tools = by_server.setdefault(str(server), {})
+        tool_days = server_tools.setdefault(str(tool), {})
+        tool_days[day] = tool_days.get(day, 0) + int(count)
+
+    if today is None:
+        today = date.fromisoformat(max_day) if max_day else date.today()
+
+    history_days = 0
+    if history_since is not None:
+        history_days = (today - date.fromisoformat(history_since)).days
+
+    top_servers: list[dict[str, Any]] = []
+    used_segments = set(by_server)
+    total_invocations = 0
+    distinct_tools: set[tuple[str, str]] = set()
+
+    for server, tools in by_server.items():
+        last_used = max(day for day_counts in tools.values() for day in day_counts)
+        count_30d = 0
+        server_total = 0
+        tool_totals: list[dict[str, Any]] = []
+
+        for tool, day_counts in tools.items():
+            total = sum(day_counts.values())
+            distinct_tools.add((server, tool))
+            server_total += total
+            count_30d += sum(
+                count
+                for day, count in day_counts.items()
+                if 0 <= (today - date.fromisoformat(day)).days <= 29
+            )
+            tool_totals.append({"tool": tool, "total": total})
+
+        total_invocations += server_total
+        tool_totals.sort(key=lambda item: (-item["total"], item["tool"]))
+        top_servers.append(
+            {
+                "name": server,
+                "total": server_total,
+                "count_30d": count_30d,
+                "last_used": last_used,
+                "top_tools": tool_totals[:5],
+            }
+        )
+
+    configured_usage: set[str] = set()
+    retire_candidates: list[dict[str, str]] = []
+    active_elsewhere: list[dict[str, int]] = []
+
+    for configured_name in inventory_names:
+        normalized = _normalize_mcp_inventory_name(configured_name)
+        base_token = _mcp_base_token(normalized)
+        if normalized in used_segments or base_token in used_segments:
+            configured_usage.add(configured_name)
+            continue
+        retire_candidates.append(
+            {
+                "name": configured_name,
+                "reason": f"configured, 0 usage in {history_days}d window",
+            }
+        )
+
+    matched_used_segments = {
+        _normalize_mcp_inventory_name(name)
+        for name in configured_usage
+        if _normalize_mcp_inventory_name(name) in used_segments
+    }
+    matched_used_segments.update(
+        segment
+        for segment in used_segments
+        if any(_mcp_base_token(_normalize_mcp_inventory_name(name)) == segment for name in configured_usage)
+    )
+
+    for server in used_segments:
+        if server in matched_used_segments:
+            continue
+        server_total = sum(
+            count
+            for day_counts in by_server[server].values()
+            for count in day_counts.values()
+        )
+        active_elsewhere.append({"name": server, "total": server_total})
+
+    top_servers.sort(key=lambda item: (-item["total"], item["name"]))
+    retire_candidates.sort(key=lambda item: item["name"])
+    active_elsewhere.sort(key=lambda item: (-item["total"], item["name"]))
+
+    return {
+        "summary": {
+            "servers_configured": len(inventory_names),
+            "servers_used": len(configured_usage),
+            "servers_unused": len(inventory_names) - len(configured_usage),
+            "total_invocations": total_invocations,
+            "distinct_tools": len(distinct_tools),
+            "history_since": history_since,
+            "history_days": history_days,
+            "inventory_captured_at": inventory_captured_at,
+        },
+        "top_servers": top_servers,
+        "retire_candidates": retire_candidates,
+        "active_elsewhere": active_elsewhere,
+    }
+
+
 if __name__ == "__main__":
     scan(full=True)
-    print(json.dumps(aggregate()["summary"], indent=2))
+    capture_mcp_inventory()
+    print(
+        json.dumps(
+            {
+                "skill_summary": aggregate()["summary"],
+                "mcp_summary": aggregate_mcp()["summary"],
+            },
+            indent=2,
+        )
+    )

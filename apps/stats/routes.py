@@ -261,3 +261,48 @@ async def skill_usage_refresh():
             "total_invocations": 0,
             "history_since": None,
         }
+
+
+@router.get("/mcp-usage")
+async def mcp_usage():
+    """Return cached MCP-usage analytics with a cheap incremental refresh."""
+    empty_payload = {
+        "summary": {
+            "servers_configured": 0,
+            "servers_used": 0,
+            "servers_unused": 0,
+            "total_invocations": 0,
+            "distinct_tools": 0,
+            "history_since": None,
+            "history_days": 0,
+            "inventory_captured_at": None,
+        },
+        "top_servers": [],
+        "retire_candidates": [],
+        "active_elsewhere": [],
+    }
+    try:
+        scanner.scan(full=False)
+        return scanner.aggregate_mcp()
+    except Exception:
+        return empty_payload
+
+
+@router.post("/mcp-usage/refresh")
+async def mcp_usage_refresh():
+    """Force a full MCP-usage refresh and return the summary block."""
+    try:
+        scanner.scan(full=True)
+        scanner.capture_mcp_inventory()
+        return scanner.aggregate_mcp()["summary"]
+    except Exception:
+        return {
+            "servers_configured": 0,
+            "servers_used": 0,
+            "servers_unused": 0,
+            "total_invocations": 0,
+            "distinct_tools": 0,
+            "history_since": None,
+            "history_days": 0,
+            "inventory_captured_at": None,
+        }

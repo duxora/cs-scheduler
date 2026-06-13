@@ -30,6 +30,21 @@ def _skill_event(ts: str, skill: str) -> dict:
     }
 
 
+def _mcp_event(ts: str, server: str, tool: str) -> dict:
+    return {
+        "timestamp": ts,
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": f"mcp__{server}__{tool}",
+                    "input": {},
+                }
+            ]
+        },
+    }
+
+
 def _owned(
     name: str,
     kind: str,
@@ -292,3 +307,165 @@ def test_situational_unused_skills_sort_last_and_expose_description(tmp_path):
             "description": "Manual-invoke only helper for one-off setup-time tasks.",
         },
     ]
+
+
+def test_mcp_usage_aggregates_server_and_tool_counts(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(
+        session,
+        [
+            _mcp_event("2026-06-13T10:00:00Z", "life-graph", "life_search"),
+            _mcp_event("2026-06-13T11:00:00Z", "life-graph", "life_search"),
+            _mcp_event("2026-06-01T09:00:00Z", "life-graph", "life_store"),
+        ],
+    )
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    payload = scanner.aggregate_mcp(
+        db_path=db_path,
+        inventory=["life-graph"],
+        today=date(2026, 6, 13),
+    )
+
+    assert payload["summary"] == {
+        "servers_configured": 1,
+        "servers_used": 1,
+        "servers_unused": 0,
+        "total_invocations": 3,
+        "distinct_tools": 2,
+        "history_since": "2026-06-01",
+        "history_days": 12,
+        "inventory_captured_at": None,
+    }
+    assert payload["top_servers"] == [
+        {
+            "name": "life-graph",
+            "total": 3,
+            "count_30d": 3,
+            "last_used": "2026-06-13",
+            "top_tools": [
+                {"tool": "life_search", "total": 2},
+                {"tool": "life_store", "total": 1},
+            ],
+        }
+    ]
+    assert payload["retire_candidates"] == []
+    assert payload["active_elsewhere"] == []
+
+
+def test_mcp_inventory_name_normalization_matches_used_server_segment(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(session, [_mcp_event("2026-06-13T10:00:00Z", "plugin_claude-mem_mcp-search", "find")])
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    payload = scanner.aggregate_mcp(
+        db_path=db_path,
+        inventory=["plugin:claude-mem:mcp-search"],
+        today=date(2026, 6, 13),
+    )
+
+    assert payload["summary"]["servers_used"] == 1
+    assert payload["retire_candidates"] == []
+    assert payload["active_elsewhere"] == []
+
+
+def test_mcp_rename_guard_marks_base_token_match_as_used(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(session, [_mcp_event("2026-06-13T10:00:00Z", "notion", "search")])
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    payload = scanner.aggregate_mcp(
+        db_path=db_path,
+        inventory=["notion-company"],
+        today=date(2026, 6, 13),
+    )
+
+    assert payload["summary"]["servers_used"] == 1
+    assert payload["retire_candidates"] == []
+    assert payload["active_elsewhere"] == []
+
+
+def test_mcp_unused_configured_server_becomes_retire_candidate(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(session, [_mcp_event("2026-06-13T10:00:00Z", "life-graph", "life_search")])
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    payload = scanner.aggregate_mcp(
+        db_path=db_path,
+        inventory=["Neon", "life-graph"],
+        today=date(2026, 6, 13),
+    )
+
+    assert payload["retire_candidates"] == [
+        {"name": "Neon", "reason": "configured, 0 usage in 0d window"}
+    ]
+
+
+def test_mcp_used_server_outside_inventory_is_active_elsewhere(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(
+        session,
+        [
+            _mcp_event("2026-06-13T10:00:00Z", "Zapier-MCP", "list_zaps"),
+            _mcp_event("2026-06-13T11:00:00Z", "Zapier-MCP", "get_zap"),
+        ],
+    )
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    payload = scanner.aggregate_mcp(
+        db_path=db_path,
+        inventory=["life-graph"],
+        today=date(2026, 6, 13),
+    )
+
+    assert payload["summary"]["servers_used"] == 0
+    assert payload["retire_candidates"] == [
+        {"name": "life-graph", "reason": "configured, 0 usage in 0d window"}
+    ]
+    assert payload["active_elsewhere"] == [{"name": "Zapier-MCP", "total": 2}]
+
+
+def test_capture_mcp_inventory_parses_names_and_preserves_prior_inventory_on_failure(tmp_path):
+    db_path = tmp_path / "skill_usage.db"
+
+    initial = scanner.capture_mcp_inventory(
+        db_path=db_path,
+        runner=lambda: (
+            "life-graph: Connected\n"
+            "plugin:claude-mem:mcp-search: Connected\n"
+            "Neon: Disconnected\n"
+            "sh -c echo http://localhost:3000: ignored\n"
+        ),
+    )
+    assert initial == ["Neon", "life-graph", "plugin:claude-mem:mcp-search"]
+
+    payload = scanner.aggregate_mcp(db_path=db_path, today=date(2026, 6, 13))
+    assert payload["summary"]["inventory_captured_at"] == date.today().isoformat()
+    assert payload["summary"]["servers_configured"] == 3
+
+    preserved = scanner.capture_mcp_inventory(
+        db_path=db_path,
+        runner=lambda: "",
+    )
+    assert preserved == initial
+
+    preserved_after_exception = scanner.capture_mcp_inventory(
+        db_path=db_path,
+        runner=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    assert preserved_after_exception == initial
