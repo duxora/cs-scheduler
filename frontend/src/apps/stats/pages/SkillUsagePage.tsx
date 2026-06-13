@@ -8,6 +8,7 @@ interface SummaryData {
   skills_unused: number
   total_invocations: number
   history_since: string | null
+  history_days: number
 }
 
 interface UsageEntry {
@@ -24,6 +25,8 @@ interface RetireCandidate {
   kind: 'skill' | 'command'
   sources: string[]
   last_used: string | null
+  situational: boolean
+  description: string
 }
 
 interface UnmatchedEntry {
@@ -175,7 +178,7 @@ export default function SkillUsagePage() {
             <div className="px-4 py-3 border-b border-gray-700">
               <h2 className="text-lg font-semibold">Retire Candidates</h2>
               <p className="text-xs text-gray-500 mt-1">
-                No use in available history since {data?.summary.history_since ?? '—'}
+                Unused in the available {data?.summary.history_days ?? '—'}d window — situational/manual skills are expected to be idle.
               </p>
             </div>
             <div className="p-4">
@@ -184,13 +187,26 @@ export default function SkillUsagePage() {
               ) : (
                 <ul className="space-y-3">
                   {data.retire_candidates.map((entry) => (
-                    <li key={entry.name} className="rounded-lg border border-gray-700 bg-gray-900/60 p-3">
+                    <li
+                      key={entry.name}
+                      className={`rounded-lg border border-gray-700 bg-gray-900/60 p-3 ${entry.situational ? 'text-gray-500' : ''}`}
+                    >
                       <div className="flex items-center justify-between gap-3">
-                        <span className="font-mono text-sm text-gray-100">{entry.name}</span>
-                        <span className="inline-flex rounded border border-gray-600 px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-amber-300">
-                          {entry.kind}
-                        </span>
+                        <span className={`font-mono text-sm ${entry.situational ? 'text-gray-500' : 'text-gray-100'}`}>{entry.name}</span>
+                        <div className="flex items-center gap-2">
+                          {entry.situational && (
+                            <span className="inline-flex rounded border border-gray-700 px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-gray-500">
+                              manual/situational
+                            </span>
+                          )}
+                          <span className="inline-flex rounded border border-gray-600 px-1.5 py-0.5 text-[11px] uppercase tracking-wide text-amber-300">
+                            {entry.kind}
+                          </span>
+                        </div>
                       </div>
+                      {entry.description && (
+                        <p className="mt-2 text-xs text-gray-500">{entry.description}</p>
+                      )}
                       <p className="mt-2 text-xs text-gray-500">
                         Sources: {entry.sources.join(', ')}
                       </p>

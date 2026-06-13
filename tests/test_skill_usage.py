@@ -30,8 +30,22 @@ def _skill_event(ts: str, skill: str) -> dict:
     }
 
 
-def _owned(name: str, kind: str, source: str) -> dict:
-    return {name: {"kind": kind, "sources": [source]}}
+def _owned(
+    name: str,
+    kind: str,
+    source: str,
+    *,
+    description: str = "",
+    situational: bool = False,
+) -> dict:
+    return {
+        name: {
+            "kind": kind,
+            "sources": [source],
+            "description": description,
+            "situational": situational,
+        }
+    }
 
 
 def test_namespaced_invocation_uses_full_set_basename(tmp_path):
@@ -60,6 +74,7 @@ def test_namespaced_invocation_uses_full_set_basename(tmp_path):
             "last_used": "2026-06-13",
         }
     ]
+    assert payload["summary"]["history_days"] == 0
 
 
 def test_owned_command_counts_as_used_with_command_kind(tmp_path):
@@ -143,6 +158,8 @@ def test_retire_candidates_use_owned_set_only(tmp_path):
             "kind": "command",
             "sources": ["/commands"],
             "last_used": None,
+            "situational": False,
+            "description": "",
         }
     ]
     assert payload["enhance_candidates"] == []
@@ -225,4 +242,53 @@ def test_windows_respect_injected_today(tmp_path):
             "count_30d": 3,
             "last_used": "2026-06-13",
         }
+    ]
+    assert payload["summary"]["history_days"] == 30
+
+
+def test_situational_unused_skills_sort_last_and_expose_description(tmp_path):
+    projects_dir = tmp_path / "projects"
+    db_path = tmp_path / "skill_usage.db"
+    session = projects_dir / "session.jsonl"
+
+    _write_jsonl(session, [_skill_event("2026-06-13T10:00:00Z", "brainstorming")])
+    scanner.scan(full=True, db_path=db_path, projects_dir=projects_dir)
+
+    owned = {}
+    owned.update(
+        _owned(
+            "manual-helper",
+            "skill",
+            "/skills",
+            description="Manual-invoke only helper for one-off setup-time tasks.",
+            situational=True,
+        )
+    )
+    owned.update(_owned("plain-unused", "skill", "/skills"))
+
+    payload = scanner.aggregate(
+        db_path=db_path,
+        owned=owned,
+        full={"brainstorming", "manual-helper", "plain-unused"},
+        today=date(2026, 6, 20),
+    )
+
+    assert payload["summary"]["history_days"] == 7
+    assert payload["retire_candidates"] == [
+        {
+            "name": "plain-unused",
+            "kind": "skill",
+            "sources": ["/skills"],
+            "last_used": None,
+            "situational": False,
+            "description": "",
+        },
+        {
+            "name": "manual-helper",
+            "kind": "skill",
+            "sources": ["/skills"],
+            "last_used": None,
+            "situational": True,
+            "description": "Manual-invoke only helper for one-off setup-time tasks.",
+        },
     ]

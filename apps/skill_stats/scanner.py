@@ -7,6 +7,7 @@ import sqlite3
 from datetime import date
 from glob import glob
 from pathlib import Path
+from typing import Any
 
 PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 DB_PATH = Path(__file__).parent.parent.parent / "claude-scheduler" / "data" / "skill_usage.db"
@@ -14,6 +15,15 @@ OWNED_SKILL_GLOB = os.path.expanduser("~/.claude/skills/*/SKILL.md")
 OWNED_COMMAND_GLOB = os.path.expanduser("~/.claude/commands/*.md")
 ALL_SKILL_GLOB = os.path.expanduser("~/.claude/**/SKILL.md")
 ALL_COMMAND_GLOB = os.path.expanduser("~/.claude/**/commands/*.md")
+SITUATIONAL_MARKERS = (
+    "manual-invoke only",
+    "manual-only",
+    "never auto-fires",
+    "setup-time",
+    "one-off",
+    "situational",
+    "run before first use",
+)
 
 
 def _ensure_db(db_path: str | Path) -> sqlite3.Connection:
@@ -50,26 +60,124 @@ def _safe_resolve(path: Path) -> Path:
         return path
 
 
+def _trim_description(value: str) -> str:
+    collapsed = " ".join(value.strip().split())
+    return collapsed[:160]
+
+
+def _extract_frontmatter_description(text: str) -> str:
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ""
+
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            break
+        if stripped.lower().startswith("description:"):
+            return _trim_description(stripped.split(":", 1)[1])
+
+    return ""
+
+
+def _extract_leading_prose(text: str) -> str:
+    lines = text.splitlines()
+    paragraph: list[str] = []
+    in_frontmatter = False
+    frontmatter_closed = False
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+
+        if index == 0 and stripped == "---":
+            in_frontmatter = True
+            continue
+
+        if in_frontmatter:
+            if stripped == "---":
+                in_frontmatter = False
+                frontmatter_closed = True
+            continue
+
+        if not stripped:
+            if paragraph:
+                break
+            continue
+
+        if stripped.startswith("#"):
+            continue
+
+        if frontmatter_closed or not stripped.startswith("---"):
+            paragraph.append(stripped)
+
+    return _trim_description(" ".join(paragraph))
+
+
+def _read_owned_metadata(path: Path, kind: str) -> dict[str, Any]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+
+    description = _extract_frontmatter_description(text)
+    if kind == "command" and not description:
+        description = _extract_leading_prose(text)
+
+    normalized_description = _trim_description(description) if description else ""
+    lowered = normalized_description.lower()
+    situational = any(marker in lowered for marker in SITUATIONAL_MARKERS)
+    return {
+        "description": normalized_description,
+        "situational": situational,
+    }
+
+
 def discover_owned() -> dict[str, dict]:
     inventory: dict[str, dict[str, object]] = {}
 
     for skill_match in glob(OWNED_SKILL_GLOB):
         resolved = _safe_resolve(Path(skill_match))
         name = resolved.parent.name
-        entry = inventory.setdefault(name, {"kind": "skill", "sources": set()})
+        metadata = _read_owned_metadata(resolved, "skill")
+        entry = inventory.setdefault(
+            name,
+            {
+                "kind": "skill",
+                "sources": set(),
+                "description": "",
+                "situational": False,
+            },
+        )
         entry["kind"] = "skill"
         entry["sources"].add(str(resolved.parent.parent))
+        if metadata["description"] and not entry["description"]:
+            entry["description"] = metadata["description"]
+        entry["situational"] = bool(entry["situational"] or metadata["situational"])
 
     for command_match in glob(OWNED_COMMAND_GLOB):
         resolved = _safe_resolve(Path(command_match))
         name = resolved.stem
-        entry = inventory.setdefault(name, {"kind": "command", "sources": set()})
+        metadata = _read_owned_metadata(resolved, "command")
+        entry = inventory.setdefault(
+            name,
+            {
+                "kind": "command",
+                "sources": set(),
+                "description": "",
+                "situational": False,
+            },
+        )
         entry["sources"].add(str(resolved.parent))
+        if metadata["description"] and not entry["description"]:
+            entry["description"] = metadata["description"]
+        entry["situational"] = bool(entry["situational"] or metadata["situational"])
 
     return {
         name: {
             "kind": str(entry["kind"]),
             "sources": sorted(str(source) for source in entry["sources"]),
+            "description": str(entry["description"]),
+            "situational": bool(entry["situational"]),
         }
         for name, entry in sorted(inventory.items())
     }
@@ -223,6 +331,10 @@ def aggregate(
     if today is None:
         today = date.fromisoformat(max_day) if max_day else date.today()
 
+    history_days = 0
+    if history_since is not None:
+        history_days = (today - date.fromisoformat(history_since)).days
+
     top: list[dict] = []
     unmatched: list[dict] = []
     enhance_candidates: list[dict] = []
@@ -276,14 +388,17 @@ def aggregate(
             "kind": owned_map[skill_name]["kind"],
             "sources": owned_map[skill_name]["sources"],
             "last_used": None,
+            "situational": bool(owned_map[skill_name].get("situational", False)),
+            "description": str(owned_map[skill_name].get("description", "")),
         }
-        for skill_name in sorted(owned_map)
+        for skill_name in owned_map
         if skill_name not in used_skill_names
     ]
 
     top.sort(key=lambda item: (-item["total"], item["name"]))
     unmatched.sort(key=lambda item: (-item["total"], item["name"]))
     enhance_candidates.sort(key=lambda item: (-item["count_30d"], -item["total"], item["name"]))
+    retire_candidates.sort(key=lambda item: (item["situational"], item["name"]))
 
     return {
         "summary": {
@@ -292,6 +407,7 @@ def aggregate(
             "skills_unused": len(owned_map) - len(used_skill_names),
             "total_invocations": total_invocations,
             "history_since": history_since,
+            "history_days": history_days,
         },
         "top": top[:30],
         "retire_candidates": retire_candidates,
