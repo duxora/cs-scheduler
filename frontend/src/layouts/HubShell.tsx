@@ -4,9 +4,39 @@ import Sidebar from './Sidebar'
 import { useTheme } from '../shared/useTheme'
 import { ThemeContext } from '../shared/ThemeContext'
 
+// Embed mode (?embed=1): render the app content with no hub chrome (sidebar/menu),
+// so hosts like Gaffer can embed a single app as an encapsulated component. Sticky
+// via sessionStorage because SPA navigation drops the query string.
+function isEmbedMode(): boolean {
+  if (new URLSearchParams(window.location.search).get('embed') === '1') {
+    sessionStorage.setItem('hub-embed', '1')
+    return true
+  }
+  return sessionStorage.getItem('hub-embed') === '1'
+}
+
 export default function HubShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const { theme, cycle } = useTheme()
+  const embed = isEmbedMode()
+
+  if (embed) {
+    return (
+      <ThemeContext.Provider value={{ theme, cycle }}>
+        <div
+          className="flex min-h-screen text-gray-100 lg:overflow-hidden lg:h-screen"
+          data-workflow-theme={theme}
+          style={{ background: 'var(--hub-shell-bg)' }}
+        >
+          <main className="flex-1 overflow-y-auto min-w-0 lg:overflow-hidden wf-main-canvas">
+            <Suspense fallback={<div className="p-6 md:p-7 lg:p-8 text-sm lg:text-base" style={{ color: 'var(--hub-text)' }}>Loading...</div>}>
+              <Outlet />
+            </Suspense>
+          </main>
+        </div>
+      </ThemeContext.Provider>
+    )
+  }
 
   return (
     <ThemeContext.Provider value={{ theme, cycle }}>
