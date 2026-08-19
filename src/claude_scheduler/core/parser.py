@@ -1,6 +1,8 @@
 """Parse .task files into Task objects."""
 import re
 from pathlib import Path
+import dataclasses
+
 from .models import Task, DEFAULTS
 from claude_scheduler.console import console
 
@@ -57,6 +59,15 @@ def parse_task(path: Path) -> Task:
             kwargs[key] = float(val)
         else:
             kwargs[key] = val
+
+    # Drop headers the model does not declare. An unknown header (e.g. a hand-added `retired:`)
+    # would otherwise raise TypeError, which find_tasks does not catch - killing discovery for
+    # EVERY task, not just this one.
+    known = {f.name for f in dataclasses.fields(Task)}
+    unknown = sorted(set(kwargs) - known)
+    if unknown:
+        console.print(f"[yellow]Warning: ignoring unknown header(s) {', '.join(unknown)} in {path}[/yellow]")
+        kwargs = {k: v for k, v in kwargs.items() if k in known}
 
     return Task(**kwargs)
 

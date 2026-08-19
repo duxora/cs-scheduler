@@ -12,15 +12,28 @@ from starlette.responses import FileResponse
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    tasks = []
     if os.environ.get("SPLANNER_DAEMON", "1") == "1":
         from apps.splanner.capture import capture_daemon_loop
 
-        task = asyncio.create_task(capture_daemon_loop())
+        tasks.append(asyncio.create_task(capture_daemon_loop()))
+
+    # Drive the .task registry from THIS process. Without it the hub serves the /scheduler UI
+    # while nothing ever fires, which is why every job grew its own launchd plist.
+    if os.environ.get("SCHEDULER_DAEMON", "1") == "1":
+        from claude_scheduler.config import get_config
+        from claude_scheduler.core.background_scheduler import scheduler_loop
+
+        cfg = get_config()
+        tasks.append(
+            asyncio.create_task(
+                scheduler_loop(cfg.paths.tasks_dir, cfg.paths.logs_dir, cfg.paths.data_dir)
+            )
+        )
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
             try:
                 await task
