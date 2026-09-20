@@ -1,7 +1,7 @@
 /**
  * Shared SVG icon atoms for the workflow app.
  * All icons accept an optional `size` prop (default varies per icon).
- * Stroke color is inherited via `currentColor` — control with a parent's text class.
+ * Stroke color is inherited via `currentColor` - control with a parent's text class.
  */
 
 interface IconProps {
@@ -55,6 +55,15 @@ export function ExternalLinkIcon({ size = 9, className }: IconProps) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
       strokeWidth="2.5" className={className}>
       <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/>
+    </svg>
+  )
+}
+
+export function ChevronLeftIcon({ size = 11, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <polyline points="15 18 9 12 15 6" />
     </svg>
   )
 }

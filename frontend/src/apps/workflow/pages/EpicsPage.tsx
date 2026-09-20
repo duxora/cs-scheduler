@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import type { RoadmapItem, TreeNode } from '../types'
-import { PriorityBadge, PriorityDot } from '../components/ui/Badge'
+import { PriorityBadge } from '../components/ui/Badge'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { CapacityReadout } from '../components/ui/CapacityReadout'
 import { FlagChip } from '../components/ui/FlagChip'
@@ -10,9 +10,9 @@ import { CopyButton } from '../components/ui/CopyButton'
 import { copyToClipboard } from '../lib/clipboard'
 import { IconButton } from '../components/ui/IconButton'
 import { ResizeHandle } from '../components/ui/ResizeHandle'
-import { CloseIcon } from '../components/ui/icons'
-import { StatusGlyph } from '../components/ui/StatusGlyph'
+import { CloseIcon, ChevronLeftIcon } from '../components/ui/icons'
 import { TreeRow } from '../components/common/TreeRow'
+import { TaskDetailPanelContent } from '../components/TaskDetailDrawer'
 import { MultiSelectChips } from '../components/ui/MultiSelectChips'
 import { useResizableDrawerWidth } from '../hooks/useResizableDrawerWidth'
 import { useLazySubtree } from '../hooks/useLazySubtree'
@@ -338,6 +338,7 @@ function EpicTreeSection({
   subtreeData,
   subtreeError,
   subtreeLoading,
+  onOpenTask,
 }: {
   item: RoadmapItem
   open: boolean
@@ -345,6 +346,8 @@ function EpicTreeSection({
   subtreeData: TreeNode | undefined
   subtreeError: unknown
   subtreeLoading: boolean
+  /** Opens a task from the tree in-place, inside the drawer's view stack. */
+  onOpenTask: (id: number) => void
 }) {
   const [expandedNodes, setExpandedNodes] = useState<Set<number>>(new Set())
 
@@ -413,6 +416,7 @@ function EpicTreeSection({
                   ancestorFlags={row.ancestorFlags}
                   expanded={expandedNodes.has(row.node.id)}
                   onToggle={toggleNode}
+                  onSelect={onOpenTask}
                 />
               ))}
             </div>
@@ -423,94 +427,70 @@ function EpicTreeSection({
   )
 }
 
-// ── Inline full task list (drawer "All tasks" section) ──────────────────
+// ── Drawer view stack (epic -> task -> task) ────────────────────────────
+//
+// The drawer never navigates the page - opening a task from the epic (or a
+// task's own children/siblings) pushes a view onto a small in-memory stack
+// instead. Escape always closes the whole drawer; the back control pops one
+// level. Re-opening a task already on the stack jumps back to it rather than
+// pushing a duplicate, which is what keeps a cyclic ancestor from looping.
 
-function collectDescendants(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
-  for (const child of node.children ?? []) {
-    out.push(child)
-    collectDescendants(child, out)
-  }
-  return out
-}
+type EpicDrawerView = { kind: 'epic' } | { kind: 'task'; id: number }
 
-function EpicAllTasksSection({
-  open,
-  onToggleOpen,
-  subtreeData,
-  subtreeError,
-  subtreeLoading,
+const EPIC_DRAWER_MAX_STACK_DEPTH = 25
+
+function EpicDrawerBreadcrumb({
+  epicTitle,
+  stack,
+  onJump,
+  onBack,
 }: {
-  open: boolean
-  onToggleOpen: () => void
-  subtreeData: TreeNode | undefined
-  subtreeError: unknown
-  subtreeLoading: boolean
+  epicTitle: string
+  stack: EpicDrawerView[]
+  onJump: (index: number) => void
+  onBack: () => void
 }) {
-  const all = useMemo(() => (subtreeData ? collectDescendants(subtreeData) : []), [subtreeData])
-
   return (
-    <div>
-      <button
-        onClick={onToggleOpen}
-        aria-expanded={open}
-        className="flex items-center gap-1.5 text-xs text-gray-400 uppercase tracking-wider mb-1.5 hover:text-gray-200 transition-colors"
-      >
-        <svg
-          width="9"
-          height="9"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className={`transition-transform shrink-0 ${open ? 'rotate-90' : ''}`}
-        >
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
-        All tasks {subtreeData && <span className="text-gray-300 normal-case tracking-normal">{all.length}</span>}
-      </button>
-      {open && (
-        <>
-          {subtreeLoading && <p className="text-xs text-gray-400 italic">Loading tasks…</p>}
-          {!subtreeLoading && subtreeError !== undefined && (
-            <p className="text-xs text-red-400">Failed to load tasks.</p>
-          )}
-          {!subtreeLoading && subtreeError === undefined && all.length === 0 && subtreeData && (
-            <p className="text-xs text-gray-400 italic">No descendant tasks.</p>
-          )}
-          {!subtreeLoading && subtreeError === undefined && all.length > 0 && (
-            <ul className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
-              {all.map((t) => (
-                <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
-                  <StatusGlyph status={t.status} />
-                  <PriorityDot priority={t.priority} />
-                  <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
-                  <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
+    <div className="flex items-center gap-1.5 px-3 py-1.5 shrink-0 border-b overflow-x-auto" style={{ borderColor: 'var(--wf-border)' }}>
+      <IconButton icon={<ChevronLeftIcon size={11} />} onClick={onBack} ariaLabel="Back one level" />
+      <nav aria-label="Drawer navigation" className="flex items-center gap-1 text-xs text-slate-400 min-w-0">
+        {stack.map((view, i) => {
+          const isLast = i === stack.length - 1
+          const label = view.kind === 'epic' ? epicTitle : <DrawerBreadcrumbTaskLabel id={view.id} />
+          return (
+            <span key={i} className="flex items-center gap-1 shrink-0">
+              {i > 0 && <span aria-hidden="true">›</span>}
+              {isLast ? (
+                <span className="text-slate-200 truncate max-w-[160px] inline-block align-bottom">{label}</span>
+              ) : (
+                <button onClick={() => onJump(i)} className="hover:text-slate-100 transition-colors truncate max-w-[160px] inline-block align-bottom">
+                  {label}
+                </button>
+              )}
+            </span>
+          )
+        })}
+      </nav>
     </div>
   )
 }
 
-// ── Drawer ───────────────────────────────────────────────────────────────
+/** SWR is keyed by the same URL TaskDetailPanelContent fetches, so a task
+ * already visited resolves from cache with no extra request. */
+function DrawerBreadcrumbTaskLabel({ id }: { id: number }) {
+  const { data } = useSWR<{ task: { title: string } }>(`/workflow/api/tasks/${id}/detail`, fetcher)
+  return <>{data ? `#${id} ${data.task.title}` : `#${id}`}</>
+}
 
 function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void }) {
   const [showAll, setShowAll] = useState(false)
   const [treeOpen, setTreeOpen] = useState(false)
-  const [allTasksOpen, setAllTasksOpen] = useState(false)
+  const [stack, setStack] = useState<EpicDrawerView[]>([{ kind: 'epic' }])
   const canStart = canStartCount(item)
   const flag = deriveEpicFlag(item)
 
-  // One shared, lazy fetch of /api/tree/:id - only once either inline section
-  // is first opened, not on every drawer open. Both sections read the same
-  // recursive subtree response.
-  const subtreeEnabled = treeOpen || allTasksOpen
-  const { data: subtreeResp, error: subtreeError, isLoading: subtreeLoading } = useLazySubtree(item.id, subtreeEnabled)
+  // Lazy fetch of /api/tree/:id - only once the tree section is first opened.
+  const { data: subtreeResp, error: subtreeError, isLoading: subtreeLoading } = useLazySubtree(item.id, treeOpen)
   const { width, min, max, isDragging, handleProps } = useResizableDrawerWidth({
     storageKey: EPIC_DRAWER_WIDTH_STORAGE_KEY,
     defaultWidth: EPIC_DRAWER_DEFAULT_WIDTH,
@@ -519,6 +499,8 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
     maxViewportRatio: EPIC_DRAWER_MAX_VIEWPORT_RATIO,
   })
 
+  // Escape always closes the whole drawer, regardless of stack depth - the
+  // back control (not Escape) is what steps up one level.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -526,6 +508,19 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
+
+  const top = stack[stack.length - 1]!
+
+  const openTask = (id: number) => {
+    setStack((prev) => {
+      const existingIdx = prev.findIndex((v) => v.kind === 'task' && v.id === id)
+      if (existingIdx !== -1) return prev.slice(0, existingIdx + 1)
+      if (prev.length >= EPIC_DRAWER_MAX_STACK_DEPTH) return prev
+      return [...prev, { kind: 'task', id }]
+    })
+  }
+  const goBack = () => setStack((prev) => (prev.length > 1 ? prev.slice(0, -1) : prev))
+  const jumpTo = (index: number) => setStack((prev) => prev.slice(0, index + 1))
 
   const inFlight = item.in_flight ?? []
   const nextTasks = item.next_tasks ?? []
@@ -554,128 +549,149 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
           valueMax={max}
           {...handleProps}
         />
-        <div className="flex items-start justify-between px-4 py-3 shrink-0 border-b gap-2" style={{ borderColor: 'var(--wf-border)' }}>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-gray-400 mb-0.5">#{item.id}</p>
-            <p className="text-sm font-medium text-gray-100 break-words">{item.title}</p>
-          </div>
-          <IconButton
-            icon={<CloseIcon size={12} />}
-            onClick={onClose}
-            ariaLabel="Close drawer"
-            className="mt-0.5 shrink-0"
+
+        {stack.length > 1 && (
+          <EpicDrawerBreadcrumb epicTitle={item.title} stack={stack} onJump={jumpTo} onBack={goBack} />
+        )}
+
+        {top.kind === 'task' ? (
+          <TaskDetailPanelContent
+            key={top.id}
+            taskId={top.id}
+            onClose={onClose}
+            onNavigate={openTask}
+            onOpenChild={openTask}
           />
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
-          <div className="flex flex-wrap gap-1.5 items-center">
-            <PriorityBadge priority={item.priority} />
-            <FlagChip flag={flag} />
-          </div>
-
-          {item.progress.total > 0 && (
-            <div>
-              <ProgressBar done={item.progress.done} total={item.progress.total} showCounts showPercent height={2} />
+        ) : (
+          <>
+            <div className="flex items-start justify-between px-4 py-3 shrink-0 border-b gap-2" style={{ borderColor: 'var(--wf-border)' }}>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-gray-400 mb-0.5">#{item.id}</p>
+                <p className="text-sm font-medium text-gray-100 break-words">{item.title}</p>
+              </div>
+              <IconButton
+                icon={<CloseIcon size={12} />}
+                onClick={onClose}
+                ariaLabel="Close drawer"
+                className="mt-0.5 shrink-0"
+              />
             </div>
-          )}
 
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Running now <span className="text-gray-300 normal-case tracking-normal">{inFlight.length}</span>
-            </p>
-            {inFlight.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">nothing running</p>
-            ) : (
-              <ul className="flex flex-col gap-1.5">
-                {inFlight.map((t) => (
-                  <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-start gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0 mt-1.5" />
-                    <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
-                    <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+            <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <PriorityBadge priority={item.priority} />
+                <FlagChip flag={flag} />
+              </div>
 
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-              Can start now <span className="text-gray-300 normal-case tracking-normal">{canStart}</span>
-            </p>
-            {nextTasks.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">nothing claimable</p>
-            ) : (
-              <>
-                <ul className="flex flex-col gap-1.5">
-                  {visibleNextTasks.map((t) => (
-                    <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-start gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
-                      <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
-                      <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
-                      <CopyButton command={`tkt_claim ${t.id}`} label="copy tkt_claim" />
-                    </li>
-                  ))}
-                </ul>
-                {!showAll && canStart > nextTasks.length && (
-                  <button
-                    onClick={() => {
-                      // next_tasks is capped at 3 by the API - there is nothing
-                      // more to reveal from it. The real "see the rest" is the
-                      // inline All tasks section below, fed by the uncapped
-                      // /api/tree response.
-                      if (nextTasks.length < canStart) setAllTasksOpen(true)
-                      else setShowAll(true)
-                    }}
-                    className="mt-1.5 text-xs text-indigo-400 hover:text-indigo-300"
-                  >
-                    {nextTasks.length < canStart
-                      ? `Preview only shows top ${nextTasks.length} of ${canStart} - see all tasks below`
-                      : `Show all ${canStart}`}
-                  </button>
+              {item.progress.total > 0 && (
+                <div>
+                  <ProgressBar done={item.progress.done} total={item.progress.total} showCounts showPercent height={2} />
+                </div>
+              )}
+
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+                  Running now <span className="text-gray-300 normal-case tracking-normal">{inFlight.length}</span>
+                </p>
+                {inFlight.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">nothing running</p>
+                ) : (
+                  <ul className="flex flex-col gap-1.5">
+                    {inFlight.map((t) => (
+                      <li key={t.id}>
+                        <button
+                          onClick={() => openTask(t.id)}
+                          className="w-full rounded-lg px-2.5 py-1.5 border flex items-start gap-2 text-left hover:border-indigo-500/40 transition-colors"
+                          style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0 mt-1.5" />
+                          <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
+                          <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
-              </>
-            )}
-          </div>
+              </div>
 
-          {blockedCount > 0 && (
-            <div>
-              <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
-                Blocked <span className="text-gray-300 normal-case tracking-normal">{blockedCount}</span>
-              </p>
-              <p className="text-xs text-gray-400">
-                {blockedCount} {blockedCount === 1 ? 'task has' : 'tasks have'} an unmet dependency.
-              </p>
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+                  Can start now <span className="text-gray-300 normal-case tracking-normal">{canStart}</span>
+                </p>
+                {nextTasks.length === 0 ? (
+                  <p className="text-xs text-gray-400 italic">nothing claimable</p>
+                ) : (
+                  <>
+                    <ul className="flex flex-col gap-1.5">
+                      {visibleNextTasks.map((t) => (
+                        <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-start gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                          <button
+                            onClick={() => openTask(t.id)}
+                            className="flex-1 min-w-0 flex items-start gap-2 text-left"
+                          >
+                            <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
+                            <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
+                          </button>
+                          <CopyButton command={`tkt_claim ${t.id}`} label="copy tkt_claim" />
+                        </li>
+                      ))}
+                    </ul>
+                    {!showAll && canStart > nextTasks.length && (
+                      <button
+                        onClick={() => {
+                          // next_tasks is capped at 3 by the API - there is nothing
+                          // more to reveal from it. The real "see the rest" is the
+                          // subtree section below, fed by the uncapped /api/tree
+                          // response.
+                          if (nextTasks.length < canStart) setTreeOpen(true)
+                          else setShowAll(true)
+                        }}
+                        className="mt-1.5 text-xs text-indigo-400 hover:text-indigo-300"
+                      >
+                        {nextTasks.length < canStart
+                          ? `Preview only shows top ${nextTasks.length} of ${canStart} - see the subtree below`
+                          : `Show all ${canStart}`}
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {blockedCount > 0 && (
+                <div>
+                  <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+                    Blocked <span className="text-gray-300 normal-case tracking-normal">{blockedCount}</span>
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    {blockedCount} {blockedCount === 1 ? 'task has' : 'tasks have'} an unmet dependency.
+                  </p>
+                </div>
+              )}
+
+              <EpicTreeSection
+                item={item}
+                open={treeOpen}
+                onToggleOpen={() => setTreeOpen((v) => !v)}
+                subtreeData={subtreeResp?.tree}
+                subtreeError={subtreeError}
+                subtreeLoading={subtreeLoading}
+                onOpenTask={openTask}
+              />
+
+              <div>
+                <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Epic operations</p>
+                <button
+                  onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
+                  className="w-full text-xs px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
+                  style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+                  title={`Copy: tkt_done ${item.id}`}
+                >
+                  Close epic (copy tkt_done)
+                </button>
+              </div>
             </div>
-          )}
-
-          <EpicTreeSection
-            item={item}
-            open={treeOpen}
-            onToggleOpen={() => setTreeOpen((v) => !v)}
-            subtreeData={subtreeResp?.tree}
-            subtreeError={subtreeError}
-            subtreeLoading={subtreeLoading}
-          />
-
-          <EpicAllTasksSection
-            open={allTasksOpen}
-            onToggleOpen={() => setAllTasksOpen((v) => !v)}
-            subtreeData={subtreeResp?.tree}
-            subtreeError={subtreeError}
-            subtreeLoading={subtreeLoading}
-          />
-
-          <div>
-            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Epic operations</p>
-            <button
-              onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
-              className="w-full text-xs px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
-              style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
-              title={`Copy: tkt_done ${item.id}`}
-            >
-              Close epic (copy tkt_done)
-            </button>
-          </div>
-        </div>
+          </>
+        )}
       </div>
     </>
   )

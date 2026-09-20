@@ -97,53 +97,39 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 // ── main component ─────────────────────────────────────────────────────────
 
-interface TaskDetailDrawerProps {
-  taskId: number | null
+export interface TaskDetailPanelContentProps {
+  taskId: number
   onClose: () => void
   onDelete?: (id: number) => Promise<void>
   /**
    * Switch the drawer to a different task (siblings list).
-   * When omitted, falls back to navigating the current task URL param —
+   * When omitted, falls back to navigating the current task URL param -
    * that works for the TaskBoard route which manages `?task=` itself.
    */
   onNavigate?: (id: number) => void
+  /**
+   * Open a CHILD task in place instead of navigating to the dedicated tree
+   * page. Opt-in and separate from `onNavigate` (siblings) so existing
+   * callers that don't pass it keep the exact prior Link-based behavior.
+   */
+  onOpenChild?: (id: number) => void
 }
 
-export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate }: TaskDetailDrawerProps) {
+/**
+ * The drawer's header + body, with no outer backdrop/positioning of its own -
+ * callers that want a standalone fixed drawer use the default-exported
+ * `TaskDetailDrawer` below; a caller embedding this inside another drawer's
+ * own shell (e.g. the epic drawer's task-view-in-stack) renders it directly.
+ */
+export function TaskDetailPanelContent({ taskId, onClose, onDelete, onNavigate, onOpenChild }: TaskDetailPanelContentProps) {
   const { data, error, mutate } = useSWR<TaskDetailResponse>(
-    taskId != null ? `/workflow/api/tasks/${taskId}/detail` : null,
+    `/workflow/api/tasks/${taskId}/detail`,
     fetcher,
   )
 
-  // Close on Escape key
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  if (taskId == null) return null
-
   return (
     <>
-      {/* Overlay backdrop (click to close) */}
-      <div
-        className="fixed inset-0 z-20"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Drawer panel */}
-      <div
-        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[400px] flex flex-col shadow-2xl border-l"
-        style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Task detail"
-      >
-        {/* Header */}
+      {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b" style={{ borderColor: 'var(--wf-border)' }}>
           {data ? (
             <div className="flex-1 min-w-0 mr-2">
@@ -206,7 +192,7 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                 )}
               </div>
 
-              {/* Parent context — shown only when this task has a parent */}
+              {/* Parent context - shown only when this task has a parent */}
               {data.parent && (
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Parent</p>
@@ -217,7 +203,7 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                 </div>
               )}
 
-              {/* Epic selector — leaf-task rows (exclude initiative, which has no meaningful parent here) */}
+              {/* Epic selector - leaf-task rows (exclude initiative, which has no meaningful parent here) */}
               {data.task.type !== 'initiative' && (
                 <EpicSelector
                   taskId={data.task.id}
@@ -227,7 +213,7 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                 />
               )}
 
-              {/* Progress — shown only for parent-type rows */}
+              {/* Progress - shown only for parent-type rows */}
               {isParentType(data.task.type) && data.progress && data.progress.total > 0 && (
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Progress</p>
@@ -259,12 +245,9 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                     Children ({data.children.length})
                   </p>
                   <ul className="flex flex-col gap-0.5">
-                    {data.children.map((c) => (
-                      <li key={c.id}>
-                        <Link
-                          to={treePath(c.id, c.slug)}
-                          className="flex items-center gap-2 py-1 px-1.5 rounded text-xs hover:bg-slate-800/60 transition-colors"
-                        >
+                    {data.children.map((c) => {
+                      const content = (
+                        <>
                           <StatusGlyph status={c.status} />
                           <TypeBadge type={c.type} />
                           <span className="font-mono text-[10px] text-slate-500 shrink-0">#{c.id}</span>
@@ -274,9 +257,28 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
                               {c.progress.done}/{c.progress.total}
                             </span>
                           )}
-                        </Link>
-                      </li>
-                    ))}
+                        </>
+                      )
+                      return (
+                        <li key={c.id}>
+                          {onOpenChild ? (
+                            <button
+                              onClick={() => onOpenChild(c.id)}
+                              className="flex items-center gap-2 py-1 px-1.5 w-full text-left rounded text-xs hover:bg-slate-800/60 transition-colors"
+                            >
+                              {content}
+                            </button>
+                          ) : (
+                            <Link
+                              to={treePath(c.id, c.slug)}
+                              className="flex items-center gap-2 py-1 px-1.5 rounded text-xs hover:bg-slate-800/60 transition-colors"
+                            >
+                              {content}
+                            </Link>
+                          )}
+                        </li>
+                      )
+                    })}
                   </ul>
                 </div>
               )}
@@ -407,6 +409,59 @@ export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate
             </div>
           )}
         </div>
+    </>
+  )
+}
+
+// ── standalone drawer (backdrop + fixed shell) ────────────────────────────
+
+interface TaskDetailDrawerProps {
+  taskId: number | null
+  onClose: () => void
+  onDelete?: (id: number) => Promise<void>
+  /**
+   * Switch the drawer to a different task (siblings list).
+   * When omitted, falls back to navigating the current task URL param -
+   * that works for the TaskBoard route which manages `?task=` itself.
+   */
+  onNavigate?: (id: number) => void
+}
+
+export default function TaskDetailDrawer({ taskId, onClose, onDelete, onNavigate }: TaskDetailDrawerProps) {
+  // Close on Escape key
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  if (taskId == null) return null
+
+  return (
+    <>
+      {/* Overlay backdrop (click to close) */}
+      <div
+        className="fixed inset-0 z-20"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+
+      {/* Drawer panel */}
+      <div
+        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[400px] flex flex-col shadow-2xl border-l"
+        style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Task detail"
+      >
+        <TaskDetailPanelContent
+          taskId={taskId}
+          onClose={onClose}
+          onDelete={onDelete}
+          onNavigate={onNavigate}
+        />
       </div>
     </>
   )
