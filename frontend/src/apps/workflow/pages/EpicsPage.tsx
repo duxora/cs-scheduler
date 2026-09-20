@@ -55,7 +55,7 @@ const STALE_DAYS = 3
  * minus the ones that are blocked.
  */
 function canStartCount(item: RoadmapItem): number {
-  return Math.max(0, item.progress.open - item.blocked_count)
+  return Math.max(0, item.progress.open - (item.blocked_count ?? 0))
 }
 
 type EpicFlagKey = 'closeable' | 'not_started' | 'stale' | 'active'
@@ -71,7 +71,7 @@ interface EpicFlag {
  * Priority: closeable > never-had-activity > stale > recently active.
  */
 function deriveEpicFlag(item: RoadmapItem): EpicFlag {
-  if (item.closeable) {
+  if (item.closeable ?? false) {
     return { key: 'closeable', label: 'close it', cls: 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50' }
   }
   if (!item.last_child_activity_at) {
@@ -138,7 +138,8 @@ function EpicRow({
   const age = daysStale(item.created_at)
   const context = resolveContext(item)
   const flag = deriveEpicFlag(item)
-  const running = item.in_flight.length
+  const capacityUnknown = item.in_flight === undefined && item.next_tasks === undefined
+  const running = item.in_flight?.length ?? 0
   const canStart = canStartCount(item)
   const display = context && (CONTEXT_KEYS as readonly string[]).includes(context)
     ? ContextToken.display[context as ContextKey]
@@ -175,11 +176,17 @@ function EpicRow({
       </td>
 
       <td className="px-3 py-2 text-xs whitespace-nowrap">
-        <span className="text-sky-300 font-medium">{running} running</span>
-        <span className="text-slate-600"> · </span>
-        <span className="text-slate-200 font-medium">{canStart}</span>
-        <span className="text-slate-500"> can start</span>
-        {item.blocked_count > 0 && (
+        {capacityUnknown ? (
+          <span className="text-slate-600">-</span>
+        ) : (
+          <>
+            <span className="text-sky-300 font-medium">{running} running</span>
+            <span className="text-slate-600"> · </span>
+            <span className="text-slate-200 font-medium">{canStart}</span>
+            <span className="text-slate-500"> can start</span>
+          </>
+        )}
+        {(item.blocked_count ?? 0) > 0 && (
           <div className="text-[10px] text-slate-500 mt-0.5">{item.blocked_count} blocked</div>
         )}
       </td>
@@ -265,9 +272,9 @@ function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }
     let closeable = 0
     let stale = 0
     for (const e of items) {
-      running += e.in_flight.length
+      running += e.in_flight?.length ?? 0
       canStart += canStartCount(e)
-      if (e.closeable) closeable += 1
+      if (e.closeable ?? false) closeable += 1
       if (deriveEpicFlag(e).key === 'stale') stale += 1
     }
     return { running, canStart, closeable, stale, count: items.length }
@@ -313,7 +320,10 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
-  const visibleNextTasks = showAll ? item.next_tasks : item.next_tasks.slice(0, 3)
+  const inFlight = item.in_flight ?? []
+  const nextTasks = item.next_tasks ?? []
+  const blockedCount = item.blocked_count ?? 0
+  const visibleNextTasks = showAll ? nextTasks : nextTasks.slice(0, 3)
 
   return (
     <>
@@ -353,13 +363,13 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
 
           <div>
             <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
-              Running now <span className="text-gray-400 normal-case tracking-normal">{item.in_flight.length}</span>
+              Running now <span className="text-gray-400 normal-case tracking-normal">{inFlight.length}</span>
             </p>
-            {item.in_flight.length === 0 ? (
+            {inFlight.length === 0 ? (
               <p className="text-xs text-gray-600 italic">nothing running</p>
             ) : (
               <ul className="flex flex-col gap-1.5">
-                {item.in_flight.map((t) => (
+                {inFlight.map((t) => (
                   <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
                     <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
                     <span className="font-mono text-[10px] text-slate-500 shrink-0">#{t.id}</span>
@@ -374,7 +384,7 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
             <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
               Can start now <span className="text-gray-400 normal-case tracking-normal">{canStart}</span>
             </p>
-            {item.next_tasks.length === 0 ? (
+            {nextTasks.length === 0 ? (
               <p className="text-xs text-gray-600 italic">nothing claimable</p>
             ) : (
               <>
@@ -387,13 +397,13 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
                     </li>
                   ))}
                 </ul>
-                {!showAll && canStart > item.next_tasks.length && (
+                {!showAll && canStart > nextTasks.length && (
                   <button
                     onClick={() => setShowAll(true)}
                     className="mt-1.5 text-[11px] text-indigo-400 hover:text-indigo-300"
                   >
-                    {item.next_tasks.length < canStart
-                      ? `Preview only shows top ${item.next_tasks.length} of ${canStart}`
+                    {nextTasks.length < canStart
+                      ? `Preview only shows top ${nextTasks.length} of ${canStart}`
                       : `Show all ${canStart}`}
                   </button>
                 )}
@@ -401,13 +411,13 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
             )}
           </div>
 
-          {item.blocked_count > 0 && (
+          {blockedCount > 0 && (
             <div>
               <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
-                Blocked <span className="text-gray-400 normal-case tracking-normal">{item.blocked_count}</span>
+                Blocked <span className="text-gray-400 normal-case tracking-normal">{blockedCount}</span>
               </p>
               <p className="text-xs text-gray-500">
-                {item.blocked_count} {item.blocked_count === 1 ? 'task has' : 'tasks have'} an unmet dependency.
+                {blockedCount} {blockedCount === 1 ? 'task has' : 'tasks have'} an unmet dependency.
               </p>
             </div>
           )}

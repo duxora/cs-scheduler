@@ -146,15 +146,15 @@ export interface RoadmapItem {
   context: Context | null
   project_context: Context | null
   slug?: string | null
-  /** Up to 3 claimable descendants (open/backlog, no unmet dependency). */
-  next_tasks: RoadmapNextTask[]
-  /** Descendants currently in_progress. */
-  in_flight: RoadmapInFlightTask[]
-  /** Open/backlog descendants with an unmet dependency. */
-  blocked_count: number
-  last_child_activity_at: string | null
-  /** Nothing outstanding - requires >=1 child and zero deferred. */
-  closeable: boolean
+  /** Up to 3 claimable descendants (open/backlog, no unmet dependency). Absent on a stale API - unknown, not empty. */
+  next_tasks?: RoadmapNextTask[]
+  /** Descendants currently in_progress. Absent on a stale API - unknown, not empty. */
+  in_flight?: RoadmapInFlightTask[]
+  /** Open/backlog descendants with an unmet dependency. Absent on a stale API - 0. */
+  blocked_count?: number
+  last_child_activity_at?: string | null
+  /** Nothing outstanding - requires >=1 child and zero deferred. Absent on a stale API - false. */
+  closeable?: boolean
 }
 
 export interface RoadmapNextTask {
