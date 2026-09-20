@@ -4,6 +4,12 @@ import useSWR from 'swr'
 import type { RoadmapItem } from '../types'
 import { PriorityBadge } from '../components/ui/Badge'
 import { ProgressBar } from '../components/ui/ProgressBar'
+import { CapacityReadout } from '../components/ui/CapacityReadout'
+import { FlagChip } from '../components/ui/FlagChip'
+import { CopyButton } from '../components/ui/CopyButton'
+import { copyToClipboard } from '../lib/clipboard'
+import { IconButton } from '../components/ui/IconButton'
+import { CloseIcon } from '../components/ui/icons'
 import {
   ContextToken,
   CONTEXT_KEYS,
@@ -92,33 +98,6 @@ function deriveEpicFlag(item: RoadmapItem): EpicFlag {
   }
 }
 
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-  } catch {
-    // clipboard API unavailable (insecure context, permission denied) - silently no-op,
-    // the button label already tells the user what would have been copied.
-  }
-}
-
-function CopyClaimButton({ id }: { id: number }) {
-  const [copied, setCopied] = useState(false)
-  return (
-    <button
-      onClick={async (e) => {
-        e.stopPropagation()
-        await copyToClipboard(`tkt_claim ${id}`)
-        setCopied(true)
-        setTimeout(() => setCopied(false), 1500)
-      }}
-      className="text-[10px] px-1.5 py-px rounded bg-indigo-600/80 text-white hover:bg-indigo-500 shrink-0"
-      title={`Copy: tkt_claim ${id}`}
-    >
-      {copied ? 'copied' : 'copy tkt_claim'}
-    </button>
-  )
-}
-
 // ── Table row ────────────────────────────────────────────────────────────
 
 function EpicRow({
@@ -167,43 +146,36 @@ function EpicRow({
       </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-slate-500 shrink-0">#{item.id}</span>
+          <span className="text-xs font-mono text-slate-400 shrink-0">#{item.id}</span>
           <span className="text-sm text-slate-100 line-clamp-1">{item.title}</span>
         </div>
-        <div className="text-[10px] text-slate-500 mt-0.5">
+        <div className="text-xs text-slate-400 mt-0.5">
           {item.project_name} · <PriorityBadge priority={item.priority} /> · {display}
         </div>
       </td>
 
-      <td className="px-3 py-2 text-xs whitespace-nowrap">
-        {capacityUnknown ? (
-          <span className="text-slate-600">-</span>
-        ) : (
-          <>
-            <span className="text-sky-300 font-medium">{running} running</span>
-            <span className="text-slate-600"> · </span>
-            <span className="text-slate-200 font-medium">{canStart}</span>
-            <span className="text-slate-500"> can start</span>
-          </>
-        )}
-        {(item.blocked_count ?? 0) > 0 && (
-          <div className="text-[10px] text-slate-500 mt-0.5">{item.blocked_count} blocked</div>
-        )}
+      <td className="px-3 py-2 text-xs">
+        <CapacityReadout
+          running={running}
+          canStart={canStart}
+          blockedCount={item.blocked_count ?? 0}
+          unknown={capacityUnknown}
+        />
       </td>
 
       <td className="px-3 py-2 min-w-[140px]">
         {progress.total > 0 ? (
           <ProgressBar done={progress.done} total={progress.total} showPercent height={1} />
         ) : (
-          <span className="text-[11px] text-slate-600 italic">no children</span>
+          <span className="text-xs text-slate-400 italic">no children</span>
         )}
       </td>
 
       <td className="px-3 py-2">
-        <span className={`text-[10px] px-1.5 py-px rounded ${flag.cls}`}>{flag.label}</span>
+        <FlagChip flag={flag} />
       </td>
 
-      <td className="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap text-right">{age}d</td>
+      <td className="px-3 py-2 text-xs text-slate-400 whitespace-nowrap text-right">{age}d</td>
     </tr>
   )
 }
@@ -228,9 +200,17 @@ function EpicTable({
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800" style={{ background: 'var(--wf-bg-card)' }}>
-      <table className="w-full text-xs">
+      <table className="w-full text-xs table-fixed">
+        <colgroup>
+          <col className="w-8" />
+          <col />
+          <col className="w-44" />
+          <col className="w-40" />
+          <col className="w-36" />
+          <col className="w-14" />
+        </colgroup>
         <thead>
-          <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800 bg-slate-900/40">
+          <tr className="text-left text-xs uppercase tracking-wider text-slate-400 border-b border-slate-800 bg-slate-900/40">
             <th className="px-3 py-2 font-medium w-8">
               <input
                 type="checkbox"
@@ -281,7 +261,7 @@ function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }
   }, [items])
 
   return (
-    <div className="flex items-center gap-2 text-[10px] flex-wrap flex-1 min-w-0">
+    <div className="flex items-center gap-2 text-xs flex-wrap flex-1 min-w-0">
       <span className="text-slate-400">
         <span className="text-slate-200 font-medium">{stats.count}</span> {label}
       </span>
@@ -335,24 +315,23 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
         aria-modal="true"
         aria-label="Epic detail"
       >
-        <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b" style={{ borderColor: 'var(--wf-border)' }}>
-          <div className="flex-1 min-w-0 mr-2">
-            <p className="text-[10px] text-gray-500 mb-0.5">#{item.id}</p>
-            <p className="text-sm font-medium text-gray-100 truncate">{item.title}</p>
+        <div className="flex items-start justify-between px-4 py-3 shrink-0 border-b gap-2" style={{ borderColor: 'var(--wf-border)' }}>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-gray-400 mb-0.5">#{item.id}</p>
+            <p className="text-sm font-medium text-gray-100 break-words">{item.title}</p>
           </div>
-          <button
+          <IconButton
+            icon={<CloseIcon size={12} />}
             onClick={onClose}
-            className="text-gray-500 hover:text-gray-300 transition-colors w-6 h-6 flex items-center justify-center rounded hover:bg-gray-800"
-            aria-label="Close drawer"
-          >
-            ✕
-          </button>
+            ariaLabel="Close drawer"
+            className="mt-0.5 shrink-0"
+          />
         </div>
 
         <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
           <div className="flex flex-wrap gap-1.5 items-center">
             <PriorityBadge priority={item.priority} />
-            <span className={`text-[10px] px-1.5 py-px rounded ${flag.cls}`}>{flag.label}</span>
+            <FlagChip flag={flag} />
           </div>
 
           {item.progress.total > 0 && (
@@ -362,18 +341,18 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
           )}
 
           <div>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
-              Running now <span className="text-gray-400 normal-case tracking-normal">{inFlight.length}</span>
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+              Running now <span className="text-gray-300 normal-case tracking-normal">{inFlight.length}</span>
             </p>
             {inFlight.length === 0 ? (
-              <p className="text-xs text-gray-600 italic">nothing running</p>
+              <p className="text-xs text-gray-400 italic">nothing running</p>
             ) : (
               <ul className="flex flex-col gap-1.5">
                 {inFlight.map((t) => (
-                  <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
-                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
-                    <span className="font-mono text-[10px] text-slate-500 shrink-0">#{t.id}</span>
-                    <span className="flex-1 min-w-0 text-xs text-slate-200 truncate">{t.title}</span>
+                  <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-start gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0 mt-1.5" />
+                    <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
+                    <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
                   </li>
                 ))}
               </ul>
@@ -381,26 +360,26 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
           </div>
 
           <div>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
-              Can start now <span className="text-gray-400 normal-case tracking-normal">{canStart}</span>
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+              Can start now <span className="text-gray-300 normal-case tracking-normal">{canStart}</span>
             </p>
             {nextTasks.length === 0 ? (
-              <p className="text-xs text-gray-600 italic">nothing claimable</p>
+              <p className="text-xs text-gray-400 italic">nothing claimable</p>
             ) : (
               <>
                 <ul className="flex flex-col gap-1.5">
                   {visibleNextTasks.map((t) => (
-                    <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
-                      <span className="font-mono text-[10px] text-slate-500 shrink-0">#{t.id}</span>
-                      <span className="flex-1 min-w-0 text-xs text-slate-200 truncate">{t.title}</span>
-                      <CopyClaimButton id={t.id} />
+                    <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-start gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                      <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
+                      <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
+                      <CopyButton command={`tkt_claim ${t.id}`} label="copy tkt_claim" />
                     </li>
                   ))}
                 </ul>
                 {!showAll && canStart > nextTasks.length && (
                   <button
                     onClick={() => setShowAll(true)}
-                    className="mt-1.5 text-[11px] text-indigo-400 hover:text-indigo-300"
+                    className="mt-1.5 text-xs text-indigo-400 hover:text-indigo-300"
                   >
                     {nextTasks.length < canStart
                       ? `Preview only shows top ${nextTasks.length} of ${canStart}`
@@ -413,35 +392,35 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
 
           {blockedCount > 0 && (
             <div>
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
-                Blocked <span className="text-gray-400 normal-case tracking-normal">{blockedCount}</span>
+              <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">
+                Blocked <span className="text-gray-300 normal-case tracking-normal">{blockedCount}</span>
               </p>
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-gray-400">
                 {blockedCount} {blockedCount === 1 ? 'task has' : 'tasks have'} an unmet dependency.
               </p>
             </div>
           )}
 
           <div>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Epic operations</p>
+            <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Epic operations</p>
             <div className="grid grid-cols-2 gap-1.5">
               <Link
                 to={treePath(item.id, item.slug)}
-                className="text-[11px] px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
+                className="text-xs px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
                 style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
               >
                 Open tree
               </Link>
               <Link
                 to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
-                className="text-[11px] px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
+                className="text-xs px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
                 style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
               >
                 All tasks
               </Link>
               <button
                 onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
-                className="col-span-2 text-[11px] px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
+                className="col-span-2 text-xs px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
                 style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
                 title={`Copy: tkt_done ${item.id}`}
               >
@@ -591,11 +570,11 @@ export default function EpicsPage() {
       {/* Filter bar */}
       <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-500 uppercase tracking-widest">Life area</span>
+          <span className="text-xs text-slate-400 uppercase tracking-widest">Life area</span>
           <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={handleContextFilterChange} />
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-slate-500 uppercase tracking-widest">Type</span>
+          <span className="text-xs text-slate-400 uppercase tracking-widest">Type</span>
           <SegmentedControl
             options={[
               { value: '', label: 'All' },
@@ -619,7 +598,7 @@ export default function EpicsPage() {
           </select>
         )}
         <div className="flex items-center gap-2 ml-auto">
-          <span className="text-[10px] text-slate-500">
+          <span className="text-xs text-slate-400">
             {filtered.length} of {data.length}
           </span>
         </div>
@@ -645,7 +624,7 @@ export default function EpicsPage() {
         return (
           <section key={key}>
             <div className="flex items-center gap-3 mb-2 lg:mb-3">
-              <h2 className={`text-[11px] lg:text-xs font-semibold uppercase tracking-widest ${accent}`}>
+              <h2 className={`text-xs font-semibold uppercase tracking-widest ${accent}`}>
                 {display}
               </h2>
               <BucketSummary items={items} label={items.length === 1 ? 'epic' : 'epics'} />

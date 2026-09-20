@@ -1,5 +1,5 @@
 /**
- * SortBuilder — composable multi-criteria sort surface.
+ * SortBuilder - composable multi-criteria sort surface.
  *
  * Generic over field-key type `F`. Caller supplies the field list and the
  * criteria controller (from `useSortCriteria`).
@@ -74,12 +74,12 @@ export default function SortBuilder<F extends string>({
 
   const inner = (
     <>
-      <span className="text-[11px] text-slate-400 font-semibold uppercase tracking-widest shrink-0">
+      <span className="text-xs text-slate-400 font-semibold uppercase tracking-widest shrink-0">
         Sort
       </span>
 
       {criteria.length === 0 && (
-        <span className="text-[11px] text-slate-500 italic">default</span>
+        <span className="text-xs text-slate-500 italic">default</span>
       )}
 
       {criteria.map((c, i) => (
@@ -105,7 +105,7 @@ export default function SortBuilder<F extends string>({
           <button
             type="button"
             onClick={() => setMenuOpen((v) => !v)}
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-slate-700 hover:border-blue-500/60 hover:bg-blue-950/30 text-[11px] text-slate-400 hover:text-blue-200 transition-all"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-slate-700 hover:border-blue-500/60 hover:bg-blue-950/30 text-xs text-slate-400 hover:text-blue-200 transition-all"
             aria-label="Add sort criterion"
             aria-expanded={menuOpen}
             aria-haspopup="menu"
@@ -128,10 +128,10 @@ export default function SortBuilder<F extends string>({
                     add(f.key)
                     setMenuOpen(false)
                   }}
-                  className="w-full text-left px-2.5 py-1.5 rounded text-[11px] text-slate-300 hover:bg-blue-900/40 hover:text-blue-100 transition-colors flex items-center justify-between gap-3"
+                  className="w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-300 hover:bg-blue-900/40 hover:text-blue-100 transition-colors flex items-center justify-between gap-3"
                 >
                   <span>{f.menuLabel}</span>
-                  <span className="text-[10px] text-slate-400 uppercase">{f.defaultDir}</span>
+                  <span className="text-xs text-slate-400 uppercase">{f.defaultDir}</span>
                 </button>
               ))}
             </div>
@@ -143,7 +143,7 @@ export default function SortBuilder<F extends string>({
         <button
           type="button"
           onClick={reset}
-          className="inline-flex items-center gap-0.5 text-[11px] text-slate-300 hover:text-red-300 px-2 py-1 rounded-full border border-slate-700/50 hover:border-red-800/50 transition-all"
+          className="inline-flex items-center gap-0.5 text-xs text-slate-300 hover:text-red-300 px-2 py-1 rounded-full border border-slate-700/50 hover:border-red-800/50 transition-all"
           aria-label="Reset sort to default"
         >
           <CloseIcon size={9} />
@@ -171,9 +171,6 @@ export default function SortBuilder<F extends string>({
       className="flex flex-wrap items-center gap-1.5 px-4 py-2 shrink-0 border-b"
       style={{ borderColor: 'var(--wf-border)' }}
     >
-      <span className="text-[11px] text-slate-200 font-semibold uppercase tracking-widest mr-1 shrink-0">
-        Sort
-      </span>
       {inner}
     </div>
   )
