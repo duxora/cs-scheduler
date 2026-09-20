@@ -843,7 +843,7 @@ export default function EpicsPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg)' }}>
+    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg-base)' }}>
       {/* Filter bar */}
       <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">

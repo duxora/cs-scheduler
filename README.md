@@ -6,11 +6,19 @@ Define tasks as `.task` files, schedule them with cron-like syntax, and let Clau
 
 ## Install
 
-**Prerequisites:** Python 3.10+, [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+**Prerequisites:** Python 3.12+, [Claude CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
 
 ```
 pip install claude-scheduler
 ```
+
+## Testing
+
+```
+/Users/ducduong/.pyenv/versions/3.12.3/bin/python -m pytest tests/ -q
+```
+
+See `tests/CLAUDE.md` for why bare `python3` doesn't work here (wrong interpreter, wrong Python version).
 
 ## Quickstart
 
@@ -55,7 +63,7 @@ Report findings grouped by severity.
 | `retry_delay` | `60` | Initial backoff delay in seconds (doubles each attempt) |
 | `notify` | `errors` | Notification level: `all`, `errors`, `none` |
 | `on_failure` | `notify` | Failure action: `investigate`, `retry`, `notify`, `ignore` |
-| `remediation_tools` | — | Tools available to the remediation agent |
+| `remediation_tools` | - | Tools available to the remediation agent |
 | `remediation_max_turns` | `15` | Max turns for remediation agent |
 
 ## CLI Reference

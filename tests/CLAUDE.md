@@ -21,3 +21,14 @@
 | #12527 | 12:50 PM | 🟣 | Workflow and Step models implemented with TDD for Claude-native orchestrator | ~690 |
 | #12524 | " | 🟣 | Implemented MCP gateway policy engine with security level enforcement | ~749 |
 </claude-mem-context>
+
+## Running the suite
+
+```
+/Users/ducduong/.pyenv/versions/3.12.3/bin/python -m pytest tests/ -q
+```
+
+Do not use bare `python3 -m pytest` - on this machine `python3` resolves to a Homebrew
+Python 3.14 with no project dependencies installed (and predates the 3.12 floor this repo
+now requires - see `apps/dev_workflow/routes.py`'s backslash-in-f-string usage, a
+SyntaxError before 3.12). Use the pinned interpreter above, which matches `.python-version`.

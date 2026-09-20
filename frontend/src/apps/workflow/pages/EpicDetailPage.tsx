@@ -195,7 +195,7 @@ export default function EpicDetailPage() {
   const progress = epic?.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
 
   return (
-    <div className="flex flex-col h-full min-h-0" style={{ background: 'var(--wf-bg)' }}>
+    <div className="flex flex-col h-full min-h-0" style={{ background: 'var(--wf-bg-base)' }}>
       {/* Header */}
       <div
         className="shrink-0 border-b px-4 py-3"

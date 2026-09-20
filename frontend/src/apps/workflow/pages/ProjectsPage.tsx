@@ -398,7 +398,7 @@ export default function ProjectsPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg)' }}>
+    <div className="h-full overflow-y-auto p-4 lg:p-6 flex flex-col gap-4 md:gap-5 lg:gap-5" style={{ background: 'var(--wf-bg-base)' }}>
       {/* Hero row — portfolio-level signals */}
       <section className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
         <Metric label="Projects" value={totals.projects} tone="slate" />
