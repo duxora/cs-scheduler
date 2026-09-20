@@ -17,6 +17,7 @@ import { useSortCriteria, type SortCriteriaConfig } from '../hooks/useSortCriter
 import { applyEpicSorts, EPIC_DEFAULT_SORT } from '../lib/sort'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import SortBuilder from '../components/SortBuilder'
+import BulkActions from '../components/BulkActions'
 import { treePath } from '../lib/urls'
 
 const EPIC_SORT_CONFIG: SortCriteriaConfig<EpicSortFieldKey> = {
@@ -120,7 +121,19 @@ function CopyClaimButton({ id }: { id: number }) {
 
 // ── Table row ────────────────────────────────────────────────────────────
 
-function EpicRow({ item, selected, onSelect }: { item: RoadmapItem; selected: boolean; onSelect: () => void }) {
+function EpicRow({
+  item,
+  selected,
+  onSelect,
+  checked,
+  onToggleChecked,
+}: {
+  item: RoadmapItem
+  selected: boolean
+  onSelect: () => void
+  checked: boolean
+  onToggleChecked: (checked: boolean, shiftKey: boolean) => void
+}) {
   const progress = item.progress
   const age = daysStale(item.created_at)
   const context = resolveContext(item)
@@ -138,6 +151,19 @@ function EpicRow({ item, selected, onSelect }: { item: RoadmapItem; selected: bo
         selected ? 'bg-indigo-950/40 shadow-[inset_2px_0_0_0_theme(colors.indigo.500)]' : 'hover:bg-slate-900/40'
       }`}
     >
+      <td className="px-3 py-2 w-8">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => {}}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleChecked(!checked, e.shiftKey)
+          }}
+          className="shrink-0 accent-indigo-400 cursor-pointer"
+          aria-label={`Select epic #${item.id}`}
+        />
+      </td>
       <td className="px-3 py-2">
         <div className="flex items-center gap-2">
           <span className="text-[10px] font-mono text-slate-500 shrink-0">#{item.id}</span>
@@ -175,12 +201,39 @@ function EpicRow({ item, selected, onSelect }: { item: RoadmapItem; selected: bo
   )
 }
 
-function EpicTable({ items, selectedId, onSelect }: { items: RoadmapItem[]; selectedId: number | null; onSelect: (id: number) => void }) {
+function EpicTable({
+  items,
+  selectedId,
+  onSelect,
+  checkedIds,
+  onToggleRow,
+  onToggleAll,
+}: {
+  items: RoadmapItem[]
+  selectedId: number | null
+  onSelect: (id: number) => void
+  checkedIds: Set<number>
+  onToggleRow: (id: number, checked: boolean, shiftKey: boolean) => void
+  onToggleAll: (ids: number[], checked: boolean) => void
+}) {
+  const allChecked = items.length > 0 && items.every((i) => checkedIds.has(i.id))
+  const someChecked = items.some((i) => checkedIds.has(i.id))
+
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800" style={{ background: 'var(--wf-bg-card)' }}>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800 bg-slate-900/40">
+            <th className="px-3 py-2 font-medium w-8">
+              <input
+                type="checkbox"
+                checked={allChecked}
+                ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked }}
+                onChange={(e) => onToggleAll(items.map((i) => i.id), e.target.checked)}
+                className="shrink-0 accent-indigo-400 cursor-pointer"
+                aria-label="Select all epics in this group"
+              />
+            </th>
             <th className="px-3 py-2 font-medium">Title</th>
             <th className="px-3 py-2 font-medium">Capacity</th>
             <th className="px-3 py-2 font-medium">Progress</th>
@@ -190,7 +243,14 @@ function EpicTable({ items, selectedId, onSelect }: { items: RoadmapItem[]; sele
         </thead>
         <tbody>
           {items.map((item) => (
-            <EpicRow key={item.id} item={item} selected={item.id === selectedId} onSelect={() => onSelect(item.id)} />
+            <EpicRow
+              key={item.id}
+              item={item}
+              selected={item.id === selectedId}
+              onSelect={() => onSelect(item.id)}
+              checked={checkedIds.has(item.id)}
+              onToggleChecked={(checked, shiftKey) => onToggleRow(item.id, checked, shiftKey)}
+            />
           ))}
         </tbody>
       </table>
@@ -392,7 +452,21 @@ export default function EpicsPage() {
   const [projectFilter, setProjectFilter] = useUrlParam('project')
   const [typeFilter, setTypeFilter] = useUrlParam('type')
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
+  const [lastClickedId, setLastClickedId] = useState<number | null>(null)
   const sortController = useSortCriteria(EPIC_SORT_CONFIG)
+
+  // Selection clears when the filter changes - a checked id from outside the
+  // new filtered set would silently carry a bulk action onto rows the operator
+  // can no longer see. Cleared at the point the filter actually changes (not in
+  // an effect) so it isn't a second render reacting to the first.
+  const clearSelection = () => {
+    setCheckedIds(new Set())
+    setLastClickedId(null)
+  }
+  const handleContextFilterChange = (v: string) => { setContextFilter(v); clearSelection() }
+  const handleProjectFilterChange = (v: string) => { setProjectFilter(v); clearSelection() }
+  const handleTypeFilterChange = (v: string) => { setTypeFilter(v); clearSelection() }
 
   const { data, isLoading, error } = useSWR<RoadmapItem[]>(
     '/workflow/api/roadmap',
@@ -442,6 +516,52 @@ export default function EpicsPage() {
     [data, selectedId],
   )
 
+  // Flattened id order matching what's actually painted (grouped buckets, each sorted),
+  // so shift-click range selection follows what the operator sees on screen.
+  const renderOrder = useMemo(() => {
+    const ids: number[] = []
+    for (const key of [...CONTEXT_KEYS, 'unclassified'] as const) {
+      for (const item of grouped[key] ?? []) ids.push(item.id)
+    }
+    return ids
+  }, [grouped])
+
+  const handleToggleRow = (id: number, checked: boolean, shiftKey: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (shiftKey && lastClickedId != null) {
+        const from = renderOrder.indexOf(lastClickedId)
+        const to = renderOrder.indexOf(id)
+        if (from !== -1 && to !== -1) {
+          const [lo, hi] = from < to ? [from, to] : [to, from]
+          for (let i = lo; i <= hi; i++) {
+            const rid = renderOrder[i]
+            if (rid !== undefined) {
+              if (checked) next.add(rid)
+              else next.delete(rid)
+            }
+          }
+          return next
+        }
+      }
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+    setLastClickedId(id)
+  }
+
+  const handleToggleAll = (ids: number[], checked: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (checked) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
+
   if (isLoading) {
     return <div className="p-4 text-xs text-slate-500">Loading epics…</div>
   }
@@ -462,7 +582,7 @@ export default function EpicsPage() {
       <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Life area</span>
-          <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={setContextFilter} />
+          <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={handleContextFilterChange} />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Type</span>
@@ -473,13 +593,13 @@ export default function EpicsPage() {
               { value: 'epic', label: 'Epics' },
             ]}
             value={typeFilter}
-            onChange={setTypeFilter}
+            onChange={handleTypeFilterChange}
           />
         </div>
         {projects.length > 1 && (
           <select
             value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
+            onChange={(e) => handleProjectFilterChange(e.target.value)}
             className="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1 focus:outline-none focus:border-gray-600"
           >
             <option value="">All projects</option>
@@ -520,7 +640,14 @@ export default function EpicsPage() {
               </h2>
               <BucketSummary items={items} label={items.length === 1 ? 'epic' : 'epics'} />
             </div>
-            <EpicTable items={items} selectedId={selectedId} onSelect={setSelectedId} />
+            <EpicTable
+              items={items}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              checkedIds={checkedIds}
+              onToggleRow={handleToggleRow}
+              onToggleAll={handleToggleAll}
+            />
           </section>
         )
       })}
@@ -530,6 +657,13 @@ export default function EpicsPage() {
       )}
 
       {selectedItem && <EpicDrawer item={selectedItem} onClose={() => setSelectedId(null)} />}
+
+      <BulkActions
+        selectedIds={checkedIds}
+        projects={[]}
+        onClearSelection={() => setCheckedIds(new Set())}
+        enabledActions={['priority']}
+      />
     </div>
   )
 }
