@@ -124,10 +124,10 @@ def _extract_handoff_note(path: Path, task_id: int) -> Optional[dict]:
 
 # ── Hierarchy helpers ────────────────────────────────────────────────────────
 
-def compute_progress(conn: sqlite3.Connection, task_id: int) -> dict:
-    """Rollup of descendant leaf-task counts by status.
-    Mirrors TaskModel.progress() in backlog/src/models/task.ts — walks the whole
-    subtree via recursive CTE but counts only leaf types (containers excluded).
+def get_descendant_leaves(conn: sqlite3.Connection, task_id: int) -> list[dict]:
+    """Leaf-type descendants (containers excluded) via the recursive CTE.
+    Single shared tree walk: compute_progress, next_tasks, in_flight and
+    last_child_activity_at all read off this instead of each re-deriving it.
     """
     rows = conn.execute(
         """
@@ -137,25 +137,56 @@ def compute_progress(conn: sqlite3.Connection, task_id: int) -> dict:
           SELECT t.id FROM tasks t
           JOIN descendants d ON t.parent_id = d.id
         )
-        SELECT t.status FROM tasks t
+        SELECT t.id, t.title, t.priority, t.status, t.updated_at, t.created_at, t.depends_on
+        FROM tasks t
         JOIN descendants d ON t.id = d.id
         WHERE t.type NOT IN ('initiative', 'epic')
         """,
         [task_id],
     ).fetchall()
+    return [dict(r) for r in rows]
 
+
+def _progress_from_rows(rows: list[dict]) -> dict:
+    """Pure rollup over leaf rows (status only needed).
+
+    Status vocabulary in this schema (from live data + the exclusion list
+    api_roadmap's own default filter already uses - status has no db-level
+    enum/CHECK, so this is the full observed set): open, backlog,
+    in_progress, done, cancelled, deferred.
+      - cancelled = withdrawn work. Excluded from the percent-complete
+        denominator, otherwise a fully-resolved epic with cancelled children
+        reads as permanently partial.
+      - deferred = postponed, NOT withdrawn - tkt's activator flips it back
+        to open at defer_until. It stays outstanding, so unlike cancelled it
+        stays IN the denominator (percent correctly reads < 100 while a
+        deferred child remains).
+    """
     total = len(rows)
     done = sum(1 for r in rows if r["status"] == "done")
     in_progress = sum(1 for r in rows if r["status"] == "in_progress")
     open_ = sum(1 for r in rows if r["status"] in ("open", "backlog"))
-    percent = 0 if total == 0 else round((done / total) * 100)
+    cancelled = sum(1 for r in rows if r["status"] == "cancelled")
+    deferred = sum(1 for r in rows if r["status"] == "deferred")
+    denom = total - cancelled
+    percent = 0 if denom == 0 else round((done / denom) * 100)
     return {
         "total": total,
         "done": done,
         "in_progress": in_progress,
         "open": open_,
+        "cancelled": cancelled,
+        "deferred": deferred,
         "percent": percent,
     }
+
+
+def compute_progress(conn: sqlite3.Connection, task_id: int) -> dict:
+    """Rollup of descendant leaf-task counts by status.
+    Mirrors TaskModel.progress() in backlog/src/models/task.ts - walks the whole
+    subtree via recursive CTE but counts only leaf types (containers excluded).
+    """
+    return _progress_from_rows(get_descendant_leaves(conn, task_id))
 
 
 def count_children(conn: sqlite3.Connection, task_id: int) -> int:
@@ -471,6 +502,33 @@ async def api_update_project(project_id: str, request: Request):
     return JSONResponse(dict(row))
 
 
+_PRIORITY_WEIGHT = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+
+
+def _priority_weight(priority: Optional[str]) -> int:
+    return _PRIORITY_WEIGHT.get(priority, 4)
+
+
+def _unmet_dependencies(conn: sqlite3.Connection, depends_on_raw: Optional[str]) -> bool:
+    """True when depends_on names a task that is not yet done. depends_on is
+    stored as a JSON array of task ids, e.g. '[857,858]'; dependency ids can
+    point outside the epic's own subtree, so this needs a direct db lookup.
+    """
+    if not depends_on_raw:
+        return False
+    try:
+        dep_ids = jsonlib.loads(depends_on_raw)
+    except (TypeError, ValueError):
+        return False
+    if not dep_ids:
+        return False
+    placeholders = ",".join("?" for _ in dep_ids)
+    rows = conn.execute(
+        f"SELECT status FROM tasks WHERE id IN ({placeholders})", dep_ids
+    ).fetchall()
+    return any(r["status"] != "done" for r in rows)
+
+
 @router.get("/api/roadmap", response_class=JSONResponse)
 async def api_roadmap(
     project: Optional[str] = Query(None),
@@ -521,7 +579,38 @@ async def api_roadmap(
     for r in rows:
         item = dict(r)
         item["children_count"] = count_children(conn, item["id"])
-        item["progress"] = compute_progress(conn, item["id"])
+        leaves = get_descendant_leaves(conn, item["id"])
+        item["progress"] = _progress_from_rows(leaves)
+        item["last_child_activity_at"] = max(
+            (leaf["updated_at"] for leaf in leaves if leaf["updated_at"]),
+            default=None,
+        )
+
+        open_leaves = [leaf for leaf in leaves if leaf["status"] in ("open", "backlog")]
+        claimable, blocked = [], []
+        for leaf in open_leaves:
+            (blocked if _unmet_dependencies(conn, leaf["depends_on"]) else claimable).append(leaf)
+        claimable.sort(
+            key=lambda leaf: (_priority_weight(leaf["priority"]), leaf["created_at"] or "")
+        )
+        item["next_tasks"] = [
+            {"id": leaf["id"], "title": leaf["title"], "priority": leaf["priority"]}
+            for leaf in claimable[:3]
+        ]
+        item["in_flight"] = [
+            {"id": leaf["id"], "title": leaf["title"]}
+            for leaf in leaves
+            if leaf["status"] == "in_progress"
+        ]
+        item["blocked_count"] = len(blocked)
+        # Closeable = nothing outstanding (open/in_progress/deferred) AND
+        # there was something to finish (total > 0, else it's unplanned).
+        item["closeable"] = (
+            item["progress"]["total"] > 0
+            and item["progress"]["open"] == 0
+            and item["progress"]["in_progress"] == 0
+            and item["progress"]["deferred"] == 0
+        )
         out.append(item)
 
     conn.close()
@@ -739,11 +828,11 @@ async def task_updates(project: Optional[str] = Query(None), status: Optional[st
 CLAUDE_SESSIONS_DIR = Path.home() / ".claude" / "sessions"
 
 # Liveness thresholds. A session file's PID probe alone is unreliable because
-# macOS recycles PIDs within days — old session files keep looking "alive" when
+# macOS recycles PIDs within days - old session files keep looking "alive" when
 # their original PID now belongs to an unrelated (but possibly also Claude)
 # process. Layer heartbeat freshness + file age on top of the PID check.
-SESSION_HEARTBEAT_FRESH_S = 300   # 5 min — a recent tkt heartbeat confirms this session is live
-SESSION_FRESH_S          = 24 * 3600  # 24h — fallback for sessions without a tkt claim
+SESSION_HEARTBEAT_FRESH_S = 300   # 5 min - a recent tkt heartbeat confirms this session is live
+SESSION_FRESH_S          = 24 * 3600  # 24h - fallback for sessions without a tkt claim
 
 
 def _parse_started_at(started) -> Optional[float]:
@@ -1070,7 +1159,7 @@ async def api_sessions():
     except Exception:
         claim_map = {}
 
-    # Surface only alive sessions — dead/stale ones add noise without value.
+    # Surface only alive sessions - dead/stale ones add noise without value.
     alive = [s for s in _list_sessions(claim_map) if s["alive"]]
     return JSONResponse(alive)
 
@@ -1277,7 +1366,7 @@ async def launch_session(request: Request):
     project_dir = body.get("projectDir", "")
 
     if session_id:
-        # Resume existing session — open new Ghostty tab with resume command
+        # Resume existing session - open new Ghostty tab with resume command
         cmd = f'claude -r {session_id}'
         _open_terminal(cmd, cwd=project_dir or None)
         return JSONResponse({"status": "resumed", "sessionId": session_id})
@@ -1758,7 +1847,7 @@ async def api_bulk_move_tasks(request: Request):
     return JSONResponse({"ok": True, "moved": moved})
 
 
-VALID_STATUSES = {"open", "in_progress", "done", "backlog"}
+VALID_STATUSES = {"open", "in_progress", "done", "backlog", "deferred", "cancelled"}
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 
 

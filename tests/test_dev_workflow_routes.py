@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 
-# ── Minimal tkt schema — only what routes.py reads ─────────────────────────
+# ── Minimal tkt schema - only what routes.py reads ─────────────────────────
 
 SCHEMA_SQL = """
 CREATE TABLE projects (
@@ -54,6 +54,7 @@ CREATE TABLE tasks (
   energy TEXT,
   context TEXT,
   slug TEXT,
+  depends_on TEXT,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
   completed_at TEXT,
@@ -210,7 +211,7 @@ def test_tasks_returns_slug_and_context(client):
     assert isinstance(data, list)
     assert len(data) > 0
     first = data[0]
-    # Contract the frontend depends on — drop any of these and pages break.
+    # Contract the frontend depends on - drop any of these and pages break.
     for key in ("id", "title", "status", "priority", "project_id",
                 "project_name", "slug", "context", "project_context",
                 "parent_id", "created_at", "updated_at"):
@@ -265,7 +266,7 @@ def test_projects_insights_shape(client):
     data = resp.json()
     by_id = {p["project_id"]: p for p in data}
     dev = by_id["dev-flow"]
-    # Full shape the ProjectsPage consumes — break here means list view breaks.
+    # Full shape the ProjectsPage consumes - break here means list view breaks.
     for key in ("project_id", "project_name", "context",
                 "open_count", "in_progress_count", "backlog_count", "done_count",
                 "active_epic_count", "stale_count", "done_14d",
@@ -399,7 +400,7 @@ def test_task_detail_returns_drawer_shape(client):
 
 
 def test_task_detail_children_include_slug(client):
-    """TaskDetailDrawer builds child links with treePath(id, slug) — without
+    """TaskDetailDrawer builds child links with treePath(id, slug) - without
     slug the links silently degrade to bare-id URLs."""
     resp = client.get("/workflow/api/tasks/100/detail")
     children = resp.json()["children"]
