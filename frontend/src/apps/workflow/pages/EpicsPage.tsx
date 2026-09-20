@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import type { RoadmapItem } from '../types'
@@ -9,7 +9,9 @@ import { FlagChip } from '../components/ui/FlagChip'
 import { CopyButton } from '../components/ui/CopyButton'
 import { copyToClipboard } from '../lib/clipboard'
 import { IconButton } from '../components/ui/IconButton'
+import { ResizeHandle } from '../components/ui/ResizeHandle'
 import { CloseIcon } from '../components/ui/icons'
+import { useResizableDrawerWidth } from '../hooks/useResizableDrawerWidth'
 import {
   ContextToken,
   CONTEXT_KEYS,
@@ -34,6 +36,12 @@ const EPIC_SORT_CONFIG: SortCriteriaConfig<EpicSortFieldKey> = {
 }
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json())
+
+const EPIC_DRAWER_WIDTH_STORAGE_KEY = 'workflow.epicsDrawerWidth'
+const EPIC_DRAWER_DEFAULT_WIDTH = 480
+const EPIC_DRAWER_MIN_WIDTH = 320
+const EPIC_DRAWER_MAX_WIDTH = 900
+const EPIC_DRAWER_MAX_VIEWPORT_RATIO = 0.6
 
 const CONTEXT_FILTERS: Array<{ value: string; label: string }> = [
   { value: '', label: 'All' },
@@ -291,6 +299,13 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
   const [showAll, setShowAll] = useState(false)
   const canStart = canStartCount(item)
   const flag = deriveEpicFlag(item)
+  const { width, min, max, isDragging, handleProps } = useResizableDrawerWidth({
+    storageKey: EPIC_DRAWER_WIDTH_STORAGE_KEY,
+    defaultWidth: EPIC_DRAWER_DEFAULT_WIDTH,
+    min: EPIC_DRAWER_MIN_WIDTH,
+    maxAbsolute: EPIC_DRAWER_MAX_WIDTH,
+    maxViewportRatio: EPIC_DRAWER_MAX_VIEWPORT_RATIO,
+  })
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -309,12 +324,24 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
     <>
       <div className="fixed inset-0 z-20" onClick={onClose} aria-hidden="true" />
       <div
-        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[400px] flex flex-col shadow-2xl border-l"
-        style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}
+        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[var(--epic-drawer-width)] flex flex-col shadow-2xl border-l relative"
+        style={{
+          background: 'var(--wf-bg-surface)',
+          borderColor: 'var(--wf-border)',
+          '--epic-drawer-width': `${width}px`,
+        } as CSSProperties}
         role="dialog"
         aria-modal="true"
         aria-label="Epic detail"
       >
+        <ResizeHandle
+          isDragging={isDragging}
+          ariaLabel="Resize epic detail drawer"
+          valueNow={width}
+          valueMin={min}
+          valueMax={max}
+          {...handleProps}
+        />
         <div className="flex items-start justify-between px-4 py-3 shrink-0 border-b gap-2" style={{ borderColor: 'var(--wf-border)' }}>
           <div className="flex-1 min-w-0">
             <p className="text-xs text-gray-400 mb-0.5">#{item.id}</p>
