@@ -536,7 +536,7 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
     <>
       <div className="fixed inset-0 z-20" onClick={onClose} aria-hidden="true" />
       <div
-        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[var(--epic-drawer-width)] flex flex-col shadow-2xl border-l relative"
+        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[var(--epic-drawer-width)] flex flex-col shadow-2xl border-l"
         style={{
           background: 'var(--wf-bg-surface)',
           borderColor: 'var(--wf-border)',
