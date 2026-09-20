@@ -1,11 +1,11 @@
 /**
- * Generic multi-criteria sort — shared across tasks, projects, epics.
+ * Generic multi-criteria sort - shared across tasks, projects, epics.
  *
  * Design:
- *  - Pure functions — no React, no DOM, easy to unit test.
+ *  - Pure functions - no React, no DOM, easy to unit test.
  *  - Stable: original index is the final tiebreaker so equal rows keep their
  *    incoming order across re-sorts.
- *  - Sorting NEVER hides rows — only reorders them.
+ *  - Sorting NEVER hides rows - only reorders them.
  *  - Unknown values deterministically sort to the end.
  */
 
@@ -32,7 +32,7 @@ function compareValues(a: number | string, b: number | string): number {
 
 /**
  * Apply an ordered list of sort criteria to a row array.
- * Returns a new array — does NOT mutate input.
+ * Returns a new array - does NOT mutate input.
  */
 export function applySortsGeneric<T, F extends string>(
   rows: readonly T[],
@@ -165,7 +165,11 @@ export function applyProjectSorts(
 
 // ── Epic sort ─────────────────────────────────────────────────────────────
 
+// Actionable-first: epics with claimable capacity surface before idle ones,
+// tie-broken by priority then recency. `open` (progress.open) is the closest
+// available sortable proxy for "has room to act on".
 export const EPIC_DEFAULT_SORT: readonly SortCriterion<EpicSortFieldKey>[] = [
+  { field: 'open',       dir: 'desc' },
   { field: 'priority',   dir: 'asc'  },
   { field: 'updated_at', dir: 'desc' },
 ]
