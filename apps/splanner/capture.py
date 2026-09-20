@@ -27,9 +27,16 @@ def _parse_state_datetime(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    # State written without an offset parses as naive, while `since` is always UTC-aware
+    # (_default_since, and the Z-replacing branch at the call site). Comparing the two raises
+    # TypeError and aborts the entire capture pass for that connector - which is how the
+    # calendar connector silently stopped ingesting.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _resolve_item_hierarchy(db, item_id: int) -> tuple[int, int, int] | tuple[None, None, None]:

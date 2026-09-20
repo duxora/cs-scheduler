@@ -1,9 +1,8 @@
-import { useMemo } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import useSWR from 'swr'
 import type { RoadmapItem } from '../types'
-import { TypeBadge } from '../components/ui/TypeBadge'
-import { PriorityDot, PriorityBadge, ContextBadge } from '../components/ui/Badge'
+import { PriorityBadge } from '../components/ui/Badge'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import {
   ContextToken,
@@ -18,7 +17,8 @@ import { useSortCriteria, type SortCriteriaConfig } from '../hooks/useSortCriter
 import { applyEpicSorts, EPIC_DEFAULT_SORT } from '../lib/sort'
 import { SegmentedControl } from '../components/ui/SegmentedControl'
 import SortBuilder from '../components/SortBuilder'
-import { treePath, epicPath } from '../lib/urls'
+import BulkActions from '../components/BulkActions'
+import { treePath } from '../lib/urls'
 
 const EPIC_SORT_CONFIG: SortCriteriaConfig<EpicSortFieldKey> = {
   fields: EpicSortFields,
@@ -37,11 +37,6 @@ const CONTEXT_FILTERS: Array<{ value: string; label: string }> = [
   { value: '__unclassified', label: 'Unclassified' },
 ]
 
-const VIEW_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'grid', label: 'Grid' },
-  { value: 'list', label: 'List' },
-]
-
 function resolveContext(item: RoadmapItem): string | null {
   return item.context ?? item.project_context ?? null
 }
@@ -51,242 +46,212 @@ function daysStale(iso: string): number {
   return Math.floor(ms / (1000 * 60 * 60 * 24))
 }
 
-interface EpicCardProps {
-  item: RoadmapItem
+/** Days threshold past which "no child activity" reads as stale rather than "active". */
+const STALE_DAYS = 3
+
+/**
+ * Number of claimable descendants. `next_tasks` is capped at 3 by the API
+ * (preview only) - the true count is `progress.open` (open+backlog leaves)
+ * minus the ones that are blocked.
+ */
+function canStartCount(item: RoadmapItem): number {
+  return Math.max(0, item.progress.open - item.blocked_count)
 }
 
-function EpicCard({ item }: EpicCardProps) {
-  const navigate = useNavigate()
-  const progress = item.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
-  const childCount = item.children_count ?? 0
-  const stale = daysStale(item.updated_at)
-  const age = daysStale(item.created_at)
-  const isStuck = stale > 14 && progress.in_progress === 0 && progress.total > 0 && progress.percent < 100
-  const notStarted = progress.total > 0 && progress.percent === 0 && progress.in_progress === 0
-  const nearDone = progress.total > 0 && progress.percent >= 80 && progress.percent < 100
-  const context = resolveContext(item)
+type EpicFlagKey = 'closeable' | 'not_started' | 'stale' | 'active'
 
-  // left border color signals health at a glance without reading the chips
-  const borderLeftColor = isStuck
-    ? 'rgb(239 68 68 / 0.55)'   // red-500
-    : nearDone
-    ? 'rgb(52 211 153 / 0.6)'   // emerald-400
-    : progress.in_progress > 0
-    ? 'rgb(251 191 36 / 0.6)'   // amber-400
-    : 'var(--wf-border)'
+interface EpicFlag {
+  key: EpicFlagKey
+  label: string
+  cls: string
+}
 
+/**
+ * ONE flag derivation, consumed by both the table row and the drawer header.
+ * Priority: closeable > never-had-activity > stale > recently active.
+ */
+function deriveEpicFlag(item: RoadmapItem): EpicFlag {
+  if (item.closeable) {
+    return { key: 'closeable', label: 'close it', cls: 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50' }
+  }
+  if (!item.last_child_activity_at) {
+    return { key: 'not_started', label: 'not started', cls: 'bg-slate-800/60 text-slate-400 border border-slate-700/50' }
+  }
+  const stale = daysStale(item.last_child_activity_at)
+  if (stale >= STALE_DAYS) {
+    return {
+      key: 'stale',
+      label: `no child activity ${stale}d`,
+      cls: 'bg-amber-900/50 text-amber-300 border border-amber-700/50',
+    }
+  }
+  return {
+    key: 'active',
+    label: `child active ${formatAgeCoarse(item.last_child_activity_at)}`,
+    cls: 'bg-sky-900/50 text-sky-300 border border-sky-700/50',
+  }
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // clipboard API unavailable (insecure context, permission denied) - silently no-op,
+    // the button label already tells the user what would have been copied.
+  }
+}
+
+function CopyClaimButton({ id }: { id: number }) {
+  const [copied, setCopied] = useState(false)
   return (
-    <div
-      className="group block rounded-lg border border-l-[3px] p-3 transition-all hover:border-indigo-500/60 cursor-pointer"
-      style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)', borderLeftColor }}
-      onClick={() => navigate(epicPath(item.id, item.slug))}
+    <button
+      onClick={async (e) => {
+        e.stopPropagation()
+        await copyToClipboard(`tkt_claim ${id}`)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 1500)
+      }}
+      className="text-[10px] px-1.5 py-px rounded bg-indigo-600/80 text-white hover:bg-indigo-500 shrink-0"
+      title={`Copy: tkt_claim ${id}`}
     >
-      {/* Row 1: type + id + priority + context */}
-      <div className="flex items-center gap-2 mb-2">
-        <TypeBadge type={item.type} />
-        <span className="text-[10px] font-mono text-slate-500">#{item.id}</span>
-        <PriorityDot priority={item.priority} />
-        <span className="ml-auto"><ContextBadge context={context} /></span>
-      </div>
-
-      {/* Row 2: title */}
-      <p className="text-sm font-semibold text-slate-100 leading-snug line-clamp-2 mb-2 group-hover:text-white">
-        {item.title}
-      </p>
-
-      {/* Row 3: progress */}
-      <div className="mb-2">
-        <ProgressBar done={progress.done} total={progress.total} showCounts showPercent height={1.5} />
-      </div>
-
-      {/* Row 4: health flags */}
-      <div className="flex flex-wrap gap-1 mb-2">
-        {isStuck && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-red-900/40 text-red-300 border border-red-700/40">
-            Stuck {stale}d
-          </span>
-        )}
-        {notStarted && !isStuck && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-amber-900/40 text-amber-300 border border-amber-700/40">
-            Not started
-          </span>
-        )}
-        {nearDone && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-emerald-900/40 text-emerald-300 border border-emerald-700/40">
-            Near done
-          </span>
-        )}
-        {progress.in_progress > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-amber-900/40 text-amber-300 border border-amber-700/40">
-            {progress.in_progress} in flight
-          </span>
-        )}
-        {progress.open > 0 && (
-          <span className="text-[10px] px-1.5 py-px rounded bg-blue-900/40 text-blue-300 border border-blue-700/40">
-            {progress.open} open
-          </span>
-        )}
-      </div>
-
-      {/* Footer */}
-      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
-        <span className="truncate">{item.project_name}</span>
-        <span className="shrink-0">
-          {childCount} {childCount === 1 ? 'child' : 'children'} · {age}d old · {formatAgeCoarse(item.updated_at)}
-        </span>
-      </div>
-
-      {/* Actions */}
-      <div className="flex items-center gap-1 pt-2 border-t border-slate-800/60" onClick={(e) => e.stopPropagation()}>
-        <Link
-          to={treePath(item.id, item.slug)}
-          className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
-        >
-          Tree
-        </Link>
-        <Link
-          to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
-          className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
-        >
-          Tasks
-        </Link>
-      </div>
-    </div>
+      {copied ? 'copied' : 'copy tkt_claim'}
+    </button>
   )
 }
 
-type EpicStatusFlag = 'stuck' | 'not_started' | 'near_done' | 'in_flight' | 'idle'
+// ── Table row ────────────────────────────────────────────────────────────
 
-function deriveEpicFlag(item: RoadmapItem): { key: EpicStatusFlag; label: string; cls: string } {
-  const p = item.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
-  const stale = daysStale(item.updated_at)
-  if (stale > 14 && p.in_progress === 0 && p.total > 0 && p.percent < 100) {
-    return { key: 'stuck', label: `Stuck ${stale}d`, cls: 'bg-red-900/50 text-red-300 border border-red-700/50' }
-  }
-  if (p.total > 0 && p.percent >= 80 && p.percent < 100) {
-    return { key: 'near_done', label: 'Near done', cls: 'bg-emerald-900/50 text-emerald-300 border border-emerald-700/50' }
-  }
-  if (p.in_progress > 0) {
-    return { key: 'in_flight', label: `${p.in_progress} in flight`, cls: 'bg-amber-900/50 text-amber-300 border border-amber-700/50' }
-  }
-  if (p.total > 0 && p.percent === 0) {
-    return { key: 'not_started', label: 'Not started', cls: 'bg-amber-900/50 text-amber-300 border border-amber-700/50' }
-  }
-  return { key: 'idle', label: 'Idle', cls: 'bg-slate-800/60 text-slate-400 border border-slate-700/50' }
-}
-
-function EpicListRow({ item }: { item: RoadmapItem }) {
-  const progress = item.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
-  const childCount = item.children_count ?? 0
+function EpicRow({
+  item,
+  selected,
+  onSelect,
+  checked,
+  onToggleChecked,
+}: {
+  item: RoadmapItem
+  selected: boolean
+  onSelect: () => void
+  checked: boolean
+  onToggleChecked: (checked: boolean, shiftKey: boolean) => void
+}) {
+  const progress = item.progress
   const age = daysStale(item.created_at)
   const context = resolveContext(item)
   const flag = deriveEpicFlag(item)
+  const running = item.in_flight.length
+  const canStart = canStartCount(item)
+  const display = context && (CONTEXT_KEYS as readonly string[]).includes(context)
+    ? ContextToken.display[context as ContextKey]
+    : ContextToken.fallback.display
 
   return (
-    <tr className="border-b border-slate-800/60 hover:bg-slate-900/40 transition-colors">
-      {/* ID + Title */}
+    <tr
+      onClick={onSelect}
+      className={`border-b border-slate-800/60 cursor-pointer transition-colors ${
+        selected ? 'bg-indigo-950/40 shadow-[inset_2px_0_0_0_theme(colors.indigo.500)]' : 'hover:bg-slate-900/40'
+      }`}
+    >
+      <td className="px-3 py-2 w-8">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => {}}
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggleChecked(!checked, e.shiftKey)
+          }}
+          className="shrink-0 accent-indigo-400 cursor-pointer"
+          aria-label={`Select epic #${item.id}`}
+        />
+      </td>
       <td className="px-3 py-2">
-        <Link to={treePath(item.id, item.slug)} className="group block">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-mono text-slate-500 shrink-0">#{item.id}</span>
-            <span className="text-sm text-slate-100 group-hover:text-white line-clamp-1">
-              {item.title}
-            </span>
-          </div>
-        </Link>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] font-mono text-slate-500 shrink-0">#{item.id}</span>
+          <span className="text-sm text-slate-100 line-clamp-1">{item.title}</span>
+        </div>
+        <div className="text-[10px] text-slate-500 mt-0.5">
+          {item.project_name} · <PriorityBadge priority={item.priority} /> · {display}
+        </div>
       </td>
 
-      {/* Type */}
-      <td className="px-3 py-2"><TypeBadge type={item.type} /></td>
-
-      {/* Priority */}
-      <td className="px-3 py-2"><PriorityBadge priority={item.priority} /></td>
-
-      {/* Context */}
-      <td className="px-3 py-2"><ContextBadge context={context} /></td>
-
-      {/* Project */}
-      <td className="px-3 py-2 text-xs text-slate-400 truncate max-w-[140px]">
-        {item.project_name}
+      <td className="px-3 py-2 text-xs whitespace-nowrap">
+        <span className="text-sky-300 font-medium">{running} running</span>
+        <span className="text-slate-600"> · </span>
+        <span className="text-slate-200 font-medium">{canStart}</span>
+        <span className="text-slate-500"> can start</span>
+        {item.blocked_count > 0 && (
+          <div className="text-[10px] text-slate-500 mt-0.5">{item.blocked_count} blocked</div>
+        )}
       </td>
 
-      {/* Flag */}
+      <td className="px-3 py-2 min-w-[140px]">
+        {progress.total > 0 ? (
+          <ProgressBar done={progress.done} total={progress.total} showPercent height={1} />
+        ) : (
+          <span className="text-[11px] text-slate-600 italic">no children</span>
+        )}
+      </td>
+
       <td className="px-3 py-2">
         <span className={`text-[10px] px-1.5 py-px rounded ${flag.cls}`}>{flag.label}</span>
       </td>
 
-      {/* Progress */}
-      <td className="px-3 py-2 min-w-[140px]">
-        <ProgressBar done={progress.done} total={progress.total} showCounts showPercent height={1} />
-      </td>
-
-      {/* Counts */}
-      <td className="px-3 py-2 text-center text-xs">
-        <span className="tabular-nums text-slate-300">{childCount}</span>
-      </td>
-      <td className="px-3 py-2 text-center text-xs">
-        <span className={`tabular-nums ${progress.in_progress > 0 ? 'text-amber-300 font-medium' : 'text-slate-600'}`}>
-          {progress.in_progress}
-        </span>
-      </td>
-      <td className="px-3 py-2 text-center text-xs">
-        <span className={`tabular-nums ${progress.open > 0 ? 'text-blue-300' : 'text-slate-600'}`}>
-          {progress.open}
-        </span>
-      </td>
-
-      {/* Age + updated */}
-      <td className="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap">{age}d</td>
-      <td className="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap">
-        {formatAgeCoarse(item.updated_at)}
-      </td>
-
-      {/* Actions */}
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-1">
-          <Link
-            to={treePath(item.id, item.slug)}
-            className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
-            title="Open tree view"
-          >
-            Tree
-          </Link>
-          <Link
-            to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
-            className="text-[10px] px-1.5 py-px rounded bg-slate-800/80 text-slate-200 hover:bg-slate-700 border border-slate-700/60"
-            title="Open tasks for this epic"
-          >
-            Tasks
-          </Link>
-        </div>
-      </td>
+      <td className="px-3 py-2 text-[10px] text-slate-400 whitespace-nowrap text-right">{age}d</td>
     </tr>
   )
 }
 
-function EpicListTable({ items }: { items: RoadmapItem[] }) {
+function EpicTable({
+  items,
+  selectedId,
+  onSelect,
+  checkedIds,
+  onToggleRow,
+  onToggleAll,
+}: {
+  items: RoadmapItem[]
+  selectedId: number | null
+  onSelect: (id: number) => void
+  checkedIds: Set<number>
+  onToggleRow: (id: number, checked: boolean, shiftKey: boolean) => void
+  onToggleAll: (ids: number[], checked: boolean) => void
+}) {
+  const allChecked = items.length > 0 && items.every((i) => checkedIds.has(i.id))
+  const someChecked = items.some((i) => checkedIds.has(i.id))
+
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-800" style={{ background: 'var(--wf-bg-card)' }}>
       <table className="w-full text-xs">
         <thead>
           <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 border-b border-slate-800 bg-slate-900/40">
+            <th className="px-3 py-2 font-medium w-8">
+              <input
+                type="checkbox"
+                checked={allChecked}
+                ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked }}
+                onChange={(e) => onToggleAll(items.map((i) => i.id), e.target.checked)}
+                className="shrink-0 accent-indigo-400 cursor-pointer"
+                aria-label="Select all epics in this group"
+              />
+            </th>
             <th className="px-3 py-2 font-medium">Title</th>
-            <th className="px-3 py-2 font-medium">Type</th>
-            <th className="px-3 py-2 font-medium">Priority</th>
-            <th className="px-3 py-2 font-medium">Context</th>
-            <th className="px-3 py-2 font-medium">Project</th>
-            <th className="px-3 py-2 font-medium">Status</th>
+            <th className="px-3 py-2 font-medium">Capacity</th>
             <th className="px-3 py-2 font-medium">Progress</th>
-            <th className="px-3 py-2 font-medium text-center" title="Total direct children">Kids</th>
-            <th className="px-3 py-2 font-medium text-center" title="Tasks in progress">WIP</th>
-            <th className="px-3 py-2 font-medium text-center" title="Open tasks">Open</th>
-            <th className="px-3 py-2 font-medium">Age</th>
-            <th className="px-3 py-2 font-medium">Updated</th>
-            <th className="px-3 py-2 font-medium">Actions</th>
+            <th className="px-3 py-2 font-medium">Flag</th>
+            <th className="px-3 py-2 font-medium text-right">Age</th>
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => <EpicListRow key={item.id} item={item} />)}
+          {items.map((item) => (
+            <EpicRow
+              key={item.id}
+              item={item}
+              selected={item.id === selectedId}
+              onSelect={() => onSelect(item.id)}
+              checked={checkedIds.has(item.id)}
+              onToggleChecked={(checked, shiftKey) => onToggleRow(item.id, checked, shiftKey)}
+            />
+          ))}
         </tbody>
       </table>
     </div>
@@ -295,46 +260,17 @@ function EpicListTable({ items }: { items: RoadmapItem[] }) {
 
 function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }) {
   const stats = useMemo(() => {
-    let wip = 0
-    let stuck = 0
-    let notStarted = 0
-    let nearDone = 0
-    let totalPct = 0
-    let totalWithWork = 0
+    let running = 0
+    let canStart = 0
+    let closeable = 0
+    let stale = 0
     for (const e of items) {
-      const p = e.progress ?? { total: 0, done: 0, in_progress: 0, open: 0, percent: 0 }
-      if (p.in_progress > 0) wip += 1
-      const stale = daysStale(e.updated_at)
-      if (stale > 14 && p.in_progress === 0 && p.total > 0 && p.percent < 100) stuck += 1
-      if (p.total > 0 && p.percent === 0 && p.in_progress === 0) notStarted += 1
-      if (p.total > 0 && p.percent >= 80 && p.percent < 100) nearDone += 1
-      if (p.total > 0) {
-        totalPct += p.percent
-        totalWithWork += 1
-      }
+      running += e.in_flight.length
+      canStart += canStartCount(e)
+      if (e.closeable) closeable += 1
+      if (deriveEpicFlag(e).key === 'stale') stale += 1
     }
-    const avg = totalWithWork === 0 ? 0 : Math.round(totalPct / totalWithWork)
-    return { wip, stuck, notStarted, nearDone, avg, count: items.length }
-  }, [items])
-
-  // best to push: near-done → in-flight → least stale
-  const focusTitle = useMemo(() => {
-    if (items.length <= 1) return null
-    const nearDone = items.find(e => {
-      const p = e.progress ?? { total: 0, percent: 0, in_progress: 0, done: 0, open: 0 }
-      return p.percent >= 80 && p.percent < 100
-    })
-    if (nearDone) return nearDone.title
-    const inFlight = items.find(e => {
-      const p = e.progress ?? { total: 0, percent: 0, in_progress: 0, done: 0, open: 0 }
-      return p.in_progress > 0
-    })
-    if (inFlight) return inFlight.title
-    // least stale = most recently touched
-    const sorted = [...items].sort(
-      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-    )
-    return sorted[0]?.title ?? null
+    return { running, canStart, closeable, stale, count: items.length }
   }, [items])
 
   return (
@@ -342,44 +278,195 @@ function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }
       <span className="text-slate-400">
         <span className="text-slate-200 font-medium">{stats.count}</span> {label}
       </span>
-      <span className="px-1.5 py-px rounded-full bg-slate-800/60 text-indigo-300 border border-slate-700/40">
-        {stats.avg}% avg
+      <span className="px-1.5 py-px rounded-full bg-slate-800/60 text-sky-300 border border-slate-700/40">
+        {stats.running} running
       </span>
-      {stats.stuck > 0 && (
-        <span className="px-1.5 py-px rounded-full bg-red-900/40 text-red-300 border border-red-700/40">
-          {stats.stuck} stuck
-        </span>
-      )}
-      {stats.wip > 0 && (
-        <span className="px-1.5 py-px rounded-full bg-amber-900/40 text-amber-300 border border-amber-700/40">
-          {stats.wip} WIP
-        </span>
-      )}
-      {stats.notStarted > 0 && (
-        <span className="px-1.5 py-px rounded-full bg-slate-800/50 text-slate-400 border border-slate-700/40">
-          {stats.notStarted} not started
-        </span>
-      )}
-      {stats.nearDone > 0 && (
+      <span className="px-1.5 py-px rounded-full bg-slate-800/60 text-indigo-300 border border-slate-700/40">
+        {stats.canStart} can start
+      </span>
+      {stats.closeable > 0 && (
         <span className="px-1.5 py-px rounded-full bg-emerald-900/40 text-emerald-300 border border-emerald-700/40">
-          {stats.nearDone} near done
+          {stats.closeable} closeable
         </span>
       )}
-      {focusTitle != null && (
-        <span className="ml-auto shrink-0 text-slate-500">
-          push: <span className="text-indigo-300 font-medium">{focusTitle}</span>
+      {stats.stale > 0 && (
+        <span className="px-1.5 py-px rounded-full bg-amber-900/40 text-amber-300 border border-amber-700/40">
+          {stats.stale} stale
         </span>
       )}
     </div>
   )
 }
 
+// ── Drawer ───────────────────────────────────────────────────────────────
+
+function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void }) {
+  const [showAll, setShowAll] = useState(false)
+  const canStart = canStartCount(item)
+  const flag = deriveEpicFlag(item)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  const visibleNextTasks = showAll ? item.next_tasks : item.next_tasks.slice(0, 3)
+
+  return (
+    <>
+      <div className="fixed inset-0 z-20" onClick={onClose} aria-hidden="true" />
+      <div
+        className="fixed top-0 right-0 z-30 h-full w-full sm:w-[400px] flex flex-col shadow-2xl border-l"
+        style={{ background: 'var(--wf-bg-surface)', borderColor: 'var(--wf-border)' }}
+        role="dialog"
+        aria-modal="true"
+        aria-label="Epic detail"
+      >
+        <div className="flex items-center justify-between px-4 py-3 shrink-0 border-b" style={{ borderColor: 'var(--wf-border)' }}>
+          <div className="flex-1 min-w-0 mr-2">
+            <p className="text-[10px] text-gray-500 mb-0.5">#{item.id}</p>
+            <p className="text-sm font-medium text-gray-100 truncate">{item.title}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-gray-500 hover:text-gray-300 transition-colors w-6 h-6 flex items-center justify-center rounded hover:bg-gray-800"
+            aria-label="Close drawer"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-5">
+          <div className="flex flex-wrap gap-1.5 items-center">
+            <PriorityBadge priority={item.priority} />
+            <span className={`text-[10px] px-1.5 py-px rounded ${flag.cls}`}>{flag.label}</span>
+          </div>
+
+          {item.progress.total > 0 && (
+            <div>
+              <ProgressBar done={item.progress.done} total={item.progress.total} showCounts showPercent height={2} />
+            </div>
+          )}
+
+          <div>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+              Running now <span className="text-gray-400 normal-case tracking-normal">{item.in_flight.length}</span>
+            </p>
+            {item.in_flight.length === 0 ? (
+              <p className="text-xs text-gray-600 italic">nothing running</p>
+            ) : (
+              <ul className="flex flex-col gap-1.5">
+                {item.in_flight.map((t) => (
+                  <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-sky-400 shrink-0" />
+                    <span className="font-mono text-[10px] text-slate-500 shrink-0">#{t.id}</span>
+                    <span className="flex-1 min-w-0 text-xs text-slate-200 truncate">{t.title}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+              Can start now <span className="text-gray-400 normal-case tracking-normal">{canStart}</span>
+            </p>
+            {item.next_tasks.length === 0 ? (
+              <p className="text-xs text-gray-600 italic">nothing claimable</p>
+            ) : (
+              <>
+                <ul className="flex flex-col gap-1.5">
+                  {visibleNextTasks.map((t) => (
+                    <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                      <span className="font-mono text-[10px] text-slate-500 shrink-0">#{t.id}</span>
+                      <span className="flex-1 min-w-0 text-xs text-slate-200 truncate">{t.title}</span>
+                      <CopyClaimButton id={t.id} />
+                    </li>
+                  ))}
+                </ul>
+                {!showAll && canStart > item.next_tasks.length && (
+                  <button
+                    onClick={() => setShowAll(true)}
+                    className="mt-1.5 text-[11px] text-indigo-400 hover:text-indigo-300"
+                  >
+                    {item.next_tasks.length < canStart
+                      ? `Preview only shows top ${item.next_tasks.length} of ${canStart}`
+                      : `Show all ${canStart}`}
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+
+          {item.blocked_count > 0 && (
+            <div>
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">
+                Blocked <span className="text-gray-400 normal-case tracking-normal">{item.blocked_count}</span>
+              </p>
+              <p className="text-xs text-gray-500">
+                {item.blocked_count} {item.blocked_count === 1 ? 'task has' : 'tasks have'} an unmet dependency.
+              </p>
+            </div>
+          )}
+
+          <div>
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1.5">Epic operations</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              <Link
+                to={treePath(item.id, item.slug)}
+                className="text-[11px] px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
+                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+              >
+                Open tree
+              </Link>
+              <Link
+                to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
+                className="text-[11px] px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
+                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+              >
+                All tasks
+              </Link>
+              <button
+                onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
+                className="col-span-2 text-[11px] px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
+                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+                title={`Copy: tkt_done ${item.id}`}
+              >
+                Close epic (copy tkt_done)
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  )
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────
+
 export default function EpicsPage() {
   const [contextFilter, setContextFilter] = useUrlParam('context')
   const [projectFilter, setProjectFilter] = useUrlParam('project')
   const [typeFilter, setTypeFilter] = useUrlParam('type')
-  const [view, setView] = useUrlParam('view', 'grid')
+  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
+  const [lastClickedId, setLastClickedId] = useState<number | null>(null)
   const sortController = useSortCriteria(EPIC_SORT_CONFIG)
+
+  // Selection clears when the filter changes - a checked id from outside the
+  // new filtered set would silently carry a bulk action onto rows the operator
+  // can no longer see. Cleared at the point the filter actually changes (not in
+  // an effect) so it isn't a second render reacting to the first.
+  const clearSelection = () => {
+    setCheckedIds(new Set())
+    setLastClickedId(null)
+  }
+  const handleContextFilterChange = (v: string) => { setContextFilter(v); clearSelection() }
+  const handleProjectFilterChange = (v: string) => { setProjectFilter(v); clearSelection() }
+  const handleTypeFilterChange = (v: string) => { setTypeFilter(v); clearSelection() }
 
   const { data, isLoading, error } = useSWR<RoadmapItem[]>(
     '/workflow/api/roadmap',
@@ -424,6 +511,57 @@ export default function EpicsPage() {
     return buckets
   }, [filtered, sortController.criteria])
 
+  const selectedItem = useMemo(
+    () => (selectedId == null ? null : (data?.find((e) => e.id === selectedId) ?? null)),
+    [data, selectedId],
+  )
+
+  // Flattened id order matching what's actually painted (grouped buckets, each sorted),
+  // so shift-click range selection follows what the operator sees on screen.
+  const renderOrder = useMemo(() => {
+    const ids: number[] = []
+    for (const key of [...CONTEXT_KEYS, 'unclassified'] as const) {
+      for (const item of grouped[key] ?? []) ids.push(item.id)
+    }
+    return ids
+  }, [grouped])
+
+  const handleToggleRow = (id: number, checked: boolean, shiftKey: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      if (shiftKey && lastClickedId != null) {
+        const from = renderOrder.indexOf(lastClickedId)
+        const to = renderOrder.indexOf(id)
+        if (from !== -1 && to !== -1) {
+          const [lo, hi] = from < to ? [from, to] : [to, from]
+          for (let i = lo; i <= hi; i++) {
+            const rid = renderOrder[i]
+            if (rid !== undefined) {
+              if (checked) next.add(rid)
+              else next.delete(rid)
+            }
+          }
+          return next
+        }
+      }
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+    setLastClickedId(id)
+  }
+
+  const handleToggleAll = (ids: number[], checked: boolean) => {
+    setCheckedIds((prev) => {
+      const next = new Set(prev)
+      for (const id of ids) {
+        if (checked) next.add(id)
+        else next.delete(id)
+      }
+      return next
+    })
+  }
+
   if (isLoading) {
     return <div className="p-4 text-xs text-slate-500">Loading epics…</div>
   }
@@ -444,7 +582,7 @@ export default function EpicsPage() {
       <div className="flex items-center gap-3 flex-wrap lg:flex-nowrap">
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Life area</span>
-          <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={setContextFilter} />
+          <SegmentedControl options={CONTEXT_FILTERS} value={contextFilter} onChange={handleContextFilterChange} />
         </div>
         <div className="flex items-center gap-2">
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">Type</span>
@@ -455,13 +593,13 @@ export default function EpicsPage() {
               { value: 'epic', label: 'Epics' },
             ]}
             value={typeFilter}
-            onChange={setTypeFilter}
+            onChange={handleTypeFilterChange}
           />
         </div>
         {projects.length > 1 && (
           <select
             value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
+            onChange={(e) => handleProjectFilterChange(e.target.value)}
             className="bg-gray-900 border border-gray-800 text-gray-300 text-xs rounded px-2 py-1 focus:outline-none focus:border-gray-600"
           >
             <option value="">All projects</option>
@@ -471,15 +609,13 @@ export default function EpicsPage() {
           </select>
         )}
         <div className="flex items-center gap-2 ml-auto">
-          <span className="text-[10px] text-slate-500 uppercase tracking-widest">View</span>
-          <SegmentedControl options={VIEW_OPTIONS} value={view} onChange={setView} />
           <span className="text-[10px] text-slate-500">
             {filtered.length} of {data.length}
           </span>
         </div>
       </div>
 
-      {/* Sort builder — reorders within each context bucket */}
+      {/* Sort builder - reorders within each context bucket */}
       <div className="rounded-lg border" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
         <SortBuilder controller={sortController} fields={EpicSortFields} />
       </div>
@@ -504,15 +640,14 @@ export default function EpicsPage() {
               </h2>
               <BucketSummary items={items} label={items.length === 1 ? 'epic' : 'epics'} />
             </div>
-            {view === 'list' ? (
-              <EpicListTable items={items} />
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-                {items.map((item) => (
-                  <EpicCard key={item.id} item={item} />
-                ))}
-              </div>
-            )}
+            <EpicTable
+              items={items}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              checkedIds={checkedIds}
+              onToggleRow={handleToggleRow}
+              onToggleAll={handleToggleAll}
+            />
           </section>
         )
       })}
@@ -520,6 +655,15 @@ export default function EpicsPage() {
       {filtered.length === 0 && (
         <div className="text-xs text-slate-500 text-center py-8">No epics match these filters.</div>
       )}
+
+      {selectedItem && <EpicDrawer item={selectedItem} onClose={() => setSelectedId(null)} />}
+
+      <BulkActions
+        selectedIds={checkedIds}
+        projects={[]}
+        onClearSelection={() => setCheckedIds(new Set())}
+        enabledActions={['priority']}
+      />
     </div>
   )
 }

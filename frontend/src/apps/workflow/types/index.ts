@@ -63,6 +63,10 @@ export interface ProgressSummary {
   done: number
   in_progress: number
   open: number
+  /** Withdrawn children - excluded from the percent-complete denominator. */
+  cancelled?: number
+  /** Postponed children - stays in the denominator, unlike cancelled. */
+  deferred?: number
   percent: number
 }
 
@@ -92,7 +96,7 @@ export interface Task {
   progress?: ProgressSummary
 }
 
-/** Minimal ancestor/sibling/child reference — returned by /api/tasks/:id/detail */
+/** Minimal ancestor/sibling/child reference - returned by /api/tasks/:id/detail */
 export interface TaskRef {
   id: number
   title: string
@@ -142,6 +146,26 @@ export interface RoadmapItem {
   context: Context | null
   project_context: Context | null
   slug?: string | null
+  /** Up to 3 claimable descendants (open/backlog, no unmet dependency). */
+  next_tasks: RoadmapNextTask[]
+  /** Descendants currently in_progress. */
+  in_flight: RoadmapInFlightTask[]
+  /** Open/backlog descendants with an unmet dependency. */
+  blocked_count: number
+  last_child_activity_at: string | null
+  /** Nothing outstanding - requires >=1 child and zero deferred. */
+  closeable: boolean
+}
+
+export interface RoadmapNextTask {
+  id: number
+  title: string
+  priority: string
+}
+
+export interface RoadmapInFlightTask {
+  id: number
+  title: string
 }
 
 export interface ProjectInsights {
