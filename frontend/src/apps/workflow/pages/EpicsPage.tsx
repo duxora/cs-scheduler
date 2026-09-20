@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import useSWR from 'swr'
-import type { RoadmapItem } from '../types'
-import { PriorityBadge } from '../components/ui/Badge'
+import type { RoadmapItem, TreeNode } from '../types'
+import { PriorityBadge, PriorityDot } from '../components/ui/Badge'
 import { ProgressBar } from '../components/ui/ProgressBar'
 import { CapacityReadout } from '../components/ui/CapacityReadout'
 import { FlagChip } from '../components/ui/FlagChip'
@@ -11,11 +11,16 @@ import { copyToClipboard } from '../lib/clipboard'
 import { IconButton } from '../components/ui/IconButton'
 import { ResizeHandle } from '../components/ui/ResizeHandle'
 import { CloseIcon } from '../components/ui/icons'
+import { StatusGlyph } from '../components/ui/StatusGlyph'
+import { TreeRow } from '../components/common/TreeRow'
+import { MultiSelectChips } from '../components/ui/MultiSelectChips'
 import { useResizableDrawerWidth } from '../hooks/useResizableDrawerWidth'
+import { useLazySubtree } from '../hooks/useLazySubtree'
 import {
   ContextToken,
   CONTEXT_KEYS,
   EpicSortFields,
+  Priority,
   type ContextKey,
   type EpicSortFieldKey,
 } from '../lib/tokens'
@@ -293,12 +298,219 @@ function BucketSummary({ items, label }: { items: RoadmapItem[]; label: string }
   )
 }
 
+// ── Inline subtree (drawer "Open tree" section) ─────────────────────────
+//
+// Reuses the same TreeRow/TreeConnector the dedicated /workflow/tree/:id
+// page renders with, but flattens starting at the *children* of the root
+// (the root itself is already shown in the drawer header) so depth 0 here
+// matches TreeConnector's "top-level, no connector" case.
+
+interface FlatTreeRow {
+  node: TreeNode
+  depth: number
+  isLast: boolean
+  ancestorFlags: readonly boolean[]
+}
+
+function flattenChildren(
+  children: TreeNode[],
+  expanded: Set<number>,
+  depth: number,
+  ancestorFlags: readonly boolean[],
+): FlatTreeRow[] {
+  const out: FlatTreeRow[] = []
+  children.forEach((child, i) => {
+    const isLast = i === children.length - 1
+    out.push({ node: child, depth, isLast, ancestorFlags })
+    const grandchildren = child.children ?? []
+    if (expanded.has(child.id) && grandchildren.length > 0) {
+      const nextAncestors = depth === 0 ? [] : [...ancestorFlags, isLast]
+      out.push(...flattenChildren(grandchildren, expanded, depth + 1, nextAncestors))
+    }
+  })
+  return out
+}
+
+function EpicTreeSection({
+  item,
+  open,
+  onToggleOpen,
+  subtreeData,
+  subtreeError,
+  subtreeLoading,
+}: {
+  item: RoadmapItem
+  open: boolean
+  onToggleOpen: () => void
+  subtreeData: TreeNode | undefined
+  subtreeError: unknown
+  subtreeLoading: boolean
+}) {
+  const [expandedNodes, setExpandedNodes] = useState<Set<number>>(new Set())
+
+  const toggleNode = (id: number) => {
+    setExpandedNodes((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const rows = useMemo(() => {
+    if (!subtreeData) return [] as FlatTreeRow[]
+    return flattenChildren(subtreeData.children ?? [], expandedNodes, 0, [])
+  }, [subtreeData, expandedNodes])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <button
+          onClick={onToggleOpen}
+          aria-expanded={open}
+          className="flex items-center gap-1.5 text-xs text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors"
+        >
+          <svg
+            width="9"
+            height="9"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={`transition-transform shrink-0 ${open ? 'rotate-90' : ''}`}
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+          Subtree <span className="text-gray-300 normal-case tracking-normal">{item.children_count}</span>
+        </button>
+        <Link
+          to={treePath(item.id, item.slug)}
+          className="text-xs text-slate-500 hover:text-slate-200 transition-colors"
+          title="Open dedicated tree page"
+        >
+          open full page ↗
+        </Link>
+      </div>
+      {open && (
+        <div className="rounded-lg border px-1 py-1" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+          {subtreeLoading && <p className="text-xs text-gray-400 italic px-2 py-1.5">Loading subtree…</p>}
+          {!subtreeLoading && subtreeError !== undefined && (
+            <p className="text-xs text-red-400 px-2 py-1.5">Failed to load subtree.</p>
+          )}
+          {!subtreeLoading && subtreeError === undefined && subtreeData && rows.length === 0 && (
+            <p className="text-xs text-gray-400 italic px-2 py-1.5">No children.</p>
+          )}
+          {!subtreeLoading && subtreeError === undefined && rows.length > 0 && (
+            <div className="flex flex-col">
+              {rows.map((row) => (
+                <TreeRow
+                  key={row.node.id}
+                  node={row.node}
+                  depth={row.depth}
+                  isLast={row.isLast}
+                  ancestorFlags={row.ancestorFlags}
+                  expanded={expandedNodes.has(row.node.id)}
+                  onToggle={toggleNode}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Inline full task list (drawer "All tasks" section) ──────────────────
+
+function collectDescendants(node: TreeNode, out: TreeNode[] = []): TreeNode[] {
+  for (const child of node.children ?? []) {
+    out.push(child)
+    collectDescendants(child, out)
+  }
+  return out
+}
+
+function EpicAllTasksSection({
+  open,
+  onToggleOpen,
+  subtreeData,
+  subtreeError,
+  subtreeLoading,
+}: {
+  open: boolean
+  onToggleOpen: () => void
+  subtreeData: TreeNode | undefined
+  subtreeError: unknown
+  subtreeLoading: boolean
+}) {
+  const all = useMemo(() => (subtreeData ? collectDescendants(subtreeData) : []), [subtreeData])
+
+  return (
+    <div>
+      <button
+        onClick={onToggleOpen}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-xs text-gray-400 uppercase tracking-wider mb-1.5 hover:text-gray-200 transition-colors"
+      >
+        <svg
+          width="9"
+          height="9"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`transition-transform shrink-0 ${open ? 'rotate-90' : ''}`}
+        >
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+        All tasks {subtreeData && <span className="text-gray-300 normal-case tracking-normal">{all.length}</span>}
+      </button>
+      {open && (
+        <>
+          {subtreeLoading && <p className="text-xs text-gray-400 italic">Loading tasks…</p>}
+          {!subtreeLoading && subtreeError !== undefined && (
+            <p className="text-xs text-red-400">Failed to load tasks.</p>
+          )}
+          {!subtreeLoading && subtreeError === undefined && all.length === 0 && subtreeData && (
+            <p className="text-xs text-gray-400 italic">No descendant tasks.</p>
+          )}
+          {!subtreeLoading && subtreeError === undefined && all.length > 0 && (
+            <ul className="flex flex-col gap-1.5 max-h-80 overflow-y-auto">
+              {all.map((t) => (
+                <li key={t.id} className="rounded-lg px-2.5 py-1.5 border flex items-center gap-2" style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}>
+                  <StatusGlyph status={t.status} />
+                  <PriorityDot priority={t.priority} />
+                  <span className="font-mono text-xs text-slate-400 shrink-0">#{t.id}</span>
+                  <span className="flex-1 min-w-0 text-xs text-slate-200 break-words">{t.title}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 // ── Drawer ───────────────────────────────────────────────────────────────
 
 function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void }) {
   const [showAll, setShowAll] = useState(false)
+  const [treeOpen, setTreeOpen] = useState(false)
+  const [allTasksOpen, setAllTasksOpen] = useState(false)
   const canStart = canStartCount(item)
   const flag = deriveEpicFlag(item)
+
+  // One shared, lazy fetch of /api/tree/:id - only once either inline section
+  // is first opened, not on every drawer open. Both sections read the same
+  // recursive subtree response.
+  const subtreeEnabled = treeOpen || allTasksOpen
+  const { data: subtreeResp, error: subtreeError, isLoading: subtreeLoading } = useLazySubtree(item.id, subtreeEnabled)
   const { width, min, max, isDragging, handleProps } = useResizableDrawerWidth({
     storageKey: EPIC_DRAWER_WIDTH_STORAGE_KEY,
     defaultWidth: EPIC_DRAWER_DEFAULT_WIDTH,
@@ -405,11 +617,18 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
                 </ul>
                 {!showAll && canStart > nextTasks.length && (
                   <button
-                    onClick={() => setShowAll(true)}
+                    onClick={() => {
+                      // next_tasks is capped at 3 by the API - there is nothing
+                      // more to reveal from it. The real "see the rest" is the
+                      // inline All tasks section below, fed by the uncapped
+                      // /api/tree response.
+                      if (nextTasks.length < canStart) setAllTasksOpen(true)
+                      else setShowAll(true)
+                    }}
                     className="mt-1.5 text-xs text-indigo-400 hover:text-indigo-300"
                   >
                     {nextTasks.length < canStart
-                      ? `Preview only shows top ${nextTasks.length} of ${canStart}`
+                      ? `Preview only shows top ${nextTasks.length} of ${canStart} - see all tasks below`
                       : `Show all ${canStart}`}
                   </button>
                 )}
@@ -428,32 +647,33 @@ function EpicDrawer({ item, onClose }: { item: RoadmapItem; onClose: () => void 
             </div>
           )}
 
+          <EpicTreeSection
+            item={item}
+            open={treeOpen}
+            onToggleOpen={() => setTreeOpen((v) => !v)}
+            subtreeData={subtreeResp?.tree}
+            subtreeError={subtreeError}
+            subtreeLoading={subtreeLoading}
+          />
+
+          <EpicAllTasksSection
+            open={allTasksOpen}
+            onToggleOpen={() => setAllTasksOpen((v) => !v)}
+            subtreeData={subtreeResp?.tree}
+            subtreeError={subtreeError}
+            subtreeLoading={subtreeLoading}
+          />
+
           <div>
             <p className="text-xs text-gray-400 uppercase tracking-wider mb-1.5">Epic operations</p>
-            <div className="grid grid-cols-2 gap-1.5">
-              <Link
-                to={treePath(item.id, item.slug)}
-                className="text-xs px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
-                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
-              >
-                Open tree
-              </Link>
-              <Link
-                to={`/workflow?project=${encodeURIComponent(item.project_id)}&parent=${item.id}&status=all`}
-                className="text-xs px-2 py-1.5 rounded border text-center text-slate-300 hover:text-white hover:border-slate-600"
-                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
-              >
-                All tasks
-              </Link>
-              <button
-                onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
-                className="col-span-2 text-xs px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
-                style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
-                title={`Copy: tkt_done ${item.id}`}
-              >
-                Close epic (copy tkt_done)
-              </button>
-            </div>
+            <button
+              onClick={() => copyToClipboard(`tkt_done ${item.id}`)}
+              className="w-full text-xs px-2 py-1.5 rounded border text-center text-emerald-300 hover:text-emerald-200 hover:border-emerald-700"
+              style={{ background: 'var(--wf-bg-card)', borderColor: 'var(--wf-border)' }}
+              title={`Copy: tkt_done ${item.id}`}
+            >
+              Close epic (copy tkt_done)
+            </button>
           </div>
         </div>
       </div>
@@ -467,6 +687,7 @@ export default function EpicsPage() {
   const [contextFilter, setContextFilter] = useUrlParam('context')
   const [projectFilter, setProjectFilter] = useUrlParam('project')
   const [typeFilter, setTypeFilter] = useUrlParam('type')
+  const [priorityFilterRaw, setPriorityFilterRaw] = useUrlParam('priority')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [checkedIds, setCheckedIds] = useState<Set<number>>(new Set())
   const [lastClickedId, setLastClickedId] = useState<number | null>(null)
@@ -484,6 +705,17 @@ export default function EpicsPage() {
   const handleProjectFilterChange = (v: string) => { setProjectFilter(v); clearSelection() }
   const handleTypeFilterChange = (v: string) => { setTypeFilter(v); clearSelection() }
 
+  // Multi-select, comma-separated in the URL (matches the other filters'
+  // useUrlParam pattern). Empty = no priority filtering (initial state).
+  const priorityFilter = useMemo(
+    () => (priorityFilterRaw ? priorityFilterRaw.split(',').filter(Boolean) : []),
+    [priorityFilterRaw],
+  )
+  const handlePriorityFilterChange = (next: string[]) => {
+    setPriorityFilterRaw(next.join(','))
+    clearSelection()
+  }
+
   const { data, isLoading, error } = useSWR<RoadmapItem[]>(
     '/workflow/api/roadmap',
     fetcher,
@@ -497,17 +729,35 @@ export default function EpicsPage() {
     return [...seen.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
   }, [data])
 
+  // Options are derived from the priorities actually present in the loaded
+  // data, not a hardcoded list - tasks.priority is free TEXT with no CHECK
+  // constraint and the live table has dirty values (e.g. a priority equal to
+  // a project_id). Known priorities sort first in urgency order; anything
+  // unrecognized is listed after rather than silently dropped.
+  const priorityOptions = useMemo(() => {
+    if (!data) return []
+    const present = new Set(data.map((e) => e.priority))
+    const known = (Object.keys(Priority.order) as Array<keyof typeof Priority.order>).filter((p) => present.has(p))
+    const unknown = [...present].filter((p) => !Object.hasOwn(Priority.order, p)).sort()
+    return [...known, ...unknown].map((value) => ({
+      value,
+      label: Priority.display[value as keyof typeof Priority.display] ?? value,
+      activeCls: Priority.badge[value as keyof typeof Priority.badge],
+    }))
+  }, [data])
+
   const filtered = useMemo(() => {
     if (!data) return []
     return data.filter((e) => {
       if (typeFilter && e.type !== typeFilter) return false
       if (projectFilter && e.project_id !== projectFilter) return false
+      if (priorityFilter.length > 0 && !priorityFilter.includes(e.priority)) return false
       const ctx = resolveContext(e)
       if (contextFilter === '__unclassified') return ctx == null
       if (contextFilter) return ctx === contextFilter
       return true
     })
-  }, [data, typeFilter, projectFilter, contextFilter])
+  }, [data, typeFilter, projectFilter, priorityFilter, contextFilter])
 
   const grouped = useMemo(() => {
     const buckets: Record<string, RoadmapItem[]> = { unclassified: [] }
@@ -624,6 +874,16 @@ export default function EpicsPage() {
             ))}
           </select>
         )}
+        {priorityOptions.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-400 uppercase tracking-widest">Priority</span>
+            <MultiSelectChips
+              options={priorityOptions}
+              selected={priorityFilter}
+              onChange={handlePriorityFilterChange}
+            />
+          </div>
+        )}
         <div className="flex items-center gap-2 ml-auto">
           <span className="text-xs text-slate-400">
             {filtered.length} of {data.length}
@@ -672,7 +932,9 @@ export default function EpicsPage() {
         <div className="text-xs text-slate-500 text-center py-8">No epics match these filters.</div>
       )}
 
-      {selectedItem && <EpicDrawer item={selectedItem} onClose={() => setSelectedId(null)} />}
+      {selectedItem && (
+        <EpicDrawer key={selectedItem.id} item={selectedItem} onClose={() => setSelectedId(null)} />
+      )}
 
       <BulkActions
         selectedIds={checkedIds}
